@@ -65,9 +65,23 @@ class HsfzClient(private val network: Network?) : Closeable {
         output = s.getOutputStream()
     }
 
+    /** Answers that arrived while we were waiting for another ECU (src to UDS response). */
+    private val inbox = ArrayDeque<Pair<Int, ByteArray>>()
+    private val sentAt = HashMap<Int, Long>()
+
     /** Sends one UDS request to [target] ECU and returns the UDS response (positive or 7F negative). */
     @Synchronized
     fun request(target: Int, uds: ByteArray, timeoutMs: Long = 1500): ByteArray {
+        send(target, uds)
+        return await(target, uds, timeoutMs)
+    }
+
+    /**
+     * Sends without waiting. Use with [await] to have several ECUs (e.g. gearbox and engine)
+     * work on requests at the same time. Never send two requests to the same ECU at once.
+     */
+    @Synchronized
+    fun send(target: Int, uds: ByteArray) {
         val out = output ?: throw IOException("Not connected")
         val len = uds.size + 2
         val frame = ByteBuffer.allocate(6 + len)
@@ -77,37 +91,53 @@ class HsfzClient(private val network: Network?) : Closeable {
             .put(target.toByte())
             .put(uds)
             .array()
-        val t0 = System.nanoTime()
+        sentAt[target] = System.nanoTime()
         out.write(frame)
         out.flush()
+    }
 
+    private fun matches(target: Int, uds: ByteArray, src: Int, resp: ByteArray): Boolean {
+        val functional = target == 0xDF || target == 0x33
+        if (!functional && src != target) return false
         val sid = uds[0].toInt() and 0xFF
+        val rsid = resp[0].toInt() and 0xFF
+        if (rsid == 0x7F) return resp.size >= 3 && (resp[1].toInt() and 0xFF) == sid
+        if (rsid != sid + 0x40) return false
+        // OBD Mode 01: PID must match; ReadDataByIdentifier: DID must match (skip late answers)
+        if (sid == 0x01 && uds.size >= 2 && (resp.size < 2 || resp[1] != uds[1])) return false
+        if (sid == 0x22 && uds.size >= 3 && (resp.size < 3 || resp[1] != uds[1] || resp[2] != uds[2])) return false
+        return true
+    }
+
+    /** Waits for the answer to a request sent earlier with [send]. */
+    @Synchronized
+    fun await(target: Int, uds: ByteArray, timeoutMs: Long = 1500): ByteArray {
+        // already arrived while waiting for someone else?
+        val it = inbox.iterator()
+        while (it.hasNext()) {
+            val (src, resp) = it.next()
+            if (matches(target, uds, src, resp)) {
+                it.remove(); sentAt[target]?.let { t -> noteLatency(t) }; return resp
+            }
+        }
         val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
+        while (true) {
+            val left = deadline - System.currentTimeMillis()
+            if (left <= 0) break
+            socket?.soTimeout = left.toInt().coerceAtLeast(1)
             val (ctrl, payload) = readFrame()
             if (ctrl != CTRL_DIAG || payload.size < 3) continue            // ack / alive check etc.
             val src = payload[0].toInt() and 0xFF
             val dst = payload[1].toInt() and 0xFF
-            val functional = target == 0xDF || target == 0x33
-            if ((!functional && src != target) || dst != TESTER) continue
+            if (dst != TESTER) continue
             val resp = payload.copyOfRange(2, payload.size)
-            val rsid = resp[0].toInt() and 0xFF
-
-            if (rsid == 0x7F && resp.size >= 3) {
-                if ((resp[1].toInt() and 0xFF) != sid) continue
-                if ((resp[2].toInt() and 0xFF) == 0x78) continue          // response pending
-                noteLatency(t0)
+            if (resp.size >= 3 && (resp[0].toInt() and 0xFF) == 0x7F && (resp[2].toInt() and 0xFF) == 0x78) continue // pending
+            if (matches(target, uds, src, resp)) {
+                sentAt[target]?.let { t -> noteLatency(t) }
                 return resp
             }
-            if (rsid != sid + 0x40) continue
-            // For ReadDataByIdentifier make sure the DID matches (skip late answers of older requests)
-            // For OBD Mode 01 make sure the PID matches
-            if (sid == 0x01 && uds.size >= 2 && (resp.size < 2 || resp[1] != uds[1])) continue
-            if (sid == 0x22 && uds.size >= 3 &&
-                (resp.size < 3 || resp[1] != uds[1] || resp[2] != uds[2])
-            ) continue
-            noteLatency(t0)
-            return resp
+            inbox.addLast(src to resp)
+            while (inbox.size > 16) inbox.removeFirst()
         }
         throw SocketTimeoutException("No response from ECU %02X".format(target))
     }

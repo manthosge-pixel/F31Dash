@@ -284,6 +284,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun pollLoop(c: HsfzClient) {
         var cycle = 0
+        var gearPause = 0
         val fails = HashMap<SensorId, Int>()
         var cycles = 0
         var rateT0 = System.currentTimeMillis()
@@ -320,7 +321,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
             val due: List<Pair<SensorId, DidSource>> = SENSORS.filter { d ->
                 !d.derived && d.id !in unsup && cfg[d.id] != null && when {
-                    d.id == SensorId.GEAR -> cycle % 4 == 0
+                    d.id == SensorId.GEAR -> false          // handled in parallel, see step 0
                     d.id == SensorId.TRANS_TEMP -> cycle % 20 == 5
                     d.id == SensorId.OIL_PRESSURE -> cycle % 2 == 1
                     d.fast -> true
@@ -329,6 +330,27 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             }.map { it.id to cfg.getValue(it.id) }
 
             val singles = ArrayList<Pair<SensorId, DidSource>>()
+
+            // ---- 0. gear: ask the gearbox now, collect the answer later.
+            //         The EGS works on it while the DME answers the engine requests.
+            val gearSrc = cfg[SensorId.GEAR]
+            var gearSent = false
+            if (gearSrc != null && SensorId.GEAR !in unsup && gearSrc.ecu != HsfzClient.ECU_DME) {
+                if (gearPause > 0) gearPause--
+                else { c.send(gearSrc.ecu, gearSrc.requestBytes()); gearSent = true; asked++ }
+            }
+            fun collectGear() {
+                if (!gearSent || gearSrc == null) return
+                gearSent = false
+                val resp = try {
+                    c.await(gearSrc.ecu, gearSrc.requestBytes(), 400)
+                } catch (e: SocketTimeoutException) {
+                    timeouts++; gearPause = 10; null      // EGS busy: leave it alone for a moment
+                }
+                if (resp == null) { bad(SensorId.GEAR, "timeout"); return }
+                val v = gearSrc.decode(resp)
+                if (v != null) good(SensorId.GEAR, v, resp.toHex()) else bad(SensorId.GEAR, resp.toHex())
+            }
 
             // ---- 1. OBD Mode 01, several PIDs per request
             val obdItems = due.filter { (_, s) -> s.obd && s.ecu == HsfzClient.ECU_DME && OBD_PID_LEN.containsKey(s.did) }
@@ -376,6 +398,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
             // ---- 3. everything else, one by one
             singles += due.filter { (_, s) -> !(s.obd && s.ecu == HsfzClient.ECU_DME && OBD_PID_LEN.containsKey(s.did)) && !(!s.obd && s.ecu == HsfzClient.ECU_DME) }
+            // never two requests in flight to the same ECU
+            if (singles.any { (_, s) -> !s.obd && s.ecu == gearSrc?.ecu }) collectGear()
             for ((id, src) in singles) {
                 val target = if (src.obd && src.ecu == HsfzClient.ECU_DME) obdTarget else src.ecu
                 val resp = ask(target, src.requestBytes())
@@ -383,6 +407,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 val v = src.decode(resp)
                 if (v != null) good(id, v, resp.toHex()) else bad(id, resp.toHex())
             }
+
+            collectGear()
 
             if (asked > 0 && timeouts == asked) throw IOException("Car not responding")
 
@@ -562,7 +588,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.16 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.17 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
