@@ -40,6 +40,10 @@ data class PerfState(
     val best: Double? = null,
 )
 
+data class TripLive(val active: Boolean = false, val km: Double = 0.0, val fuelL: Double = 0.0, val durationS: Long = 0) {
+    val avgL100: Double? get() = if (km > 0.3) fuelL / km * 100.0 else null
+}
+
 data class Dtc(val code: Int, val status: Int) {
     val codeHex: String get() = "%06X".format(code)
     val statusHex: String get() = "%02X".format(status)
@@ -162,6 +166,25 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         prefs.resetSource(id)
         _sources.value = prefs.loadSources()
         _unsupported.update { it - id }
+    }
+
+    // ---- dash mode + peak hold
+    private val _dashMode = MutableStateFlow(prefs.dashMode)
+    val dashMode: StateFlow<Int> = _dashMode.asStateFlow()
+    fun setDashMode(m: Int) { prefs.dashMode = m; _dashMode.value = m }
+
+    private val _peaks = MutableStateFlow<Map<SensorId, Double>>(emptyMap())
+    val peaks: StateFlow<Map<SensorId, Double>> = _peaks.asStateFlow()
+    fun resetPeaks() { _peaks.value = emptyMap() }
+
+    private fun updatePeaks(vals: Map<SensorId, Double>) {
+        var changed = false
+        val p = HashMap(_peaks.value)
+        for (id in listOf(SensorId.RPM, SensorId.BOOST, SensorId.SPEED)) {
+            val v = vals[id] ?: continue
+            if (v > (p[id] ?: Double.NEGATIVE_INFINITY)) { p[id] = v; changed = true }
+        }
+        if (changed) _peaks.value = p
     }
 
     fun resetPerfBest() {
@@ -419,9 +442,13 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     private val _recording = MutableStateFlow(false)
     val recording: StateFlow<Boolean> = _recording.asStateFlow()
 
+    private val _tripLive = MutableStateFlow(TripLive())
+    val tripLive: StateFlow<TripLive> = _tripLive.asStateFlow()
+
     private fun record(vals: Map<SensorId, Double>) {
         val done = recorder.onSample(vals)
         _recording.value = recorder.active
+        _tripLive.value = TripLive(recorder.active, recorder.liveKm, recorder.liveFuelL, recorder.liveDurationS())
         if (done != null) _trips.value = TripRecorder.loadAll(tripDir)
     }
 
@@ -447,6 +474,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun publish(vals: Map<SensorId, Double>) {
         _values.value = vals
+        updatePeaks(vals)
         _history.update { old ->
             HISTORY_IDS.associateWith { id ->
                 val list = old[id] ?: emptyList()
@@ -517,7 +545,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.12 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.13 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {

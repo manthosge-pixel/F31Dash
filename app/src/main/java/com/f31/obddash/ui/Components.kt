@@ -96,6 +96,7 @@ fun ArcGauge(
     unit: String,
     valueColor: Color = C.Text,
     unitColor: Color = C.Dim,
+    peak: Double? = null,
 ) {
     val tm = rememberTextMeasurer()
     Canvas(modifier) {
@@ -129,6 +130,12 @@ fun ArcGauge(
                 drawLine(base.copy(alpha = 0.25f), pt(deg, r + thick * 0.15f), pt(deg, r - thick * 1.15f), segW * 2.2f, StrokeCap.Round)
             }
             drawLine(col, pt(deg, r), pt(deg, r - thick), segW)
+        }
+
+        if (peak != null && peak > min) {
+            val f = ((peak.coerceAtMost(max) - min) / (max - min)).toFloat()
+            val deg = startDeg + sweepDeg * f
+            drawLine(C.Amber, pt(deg, r + thick * 0.45f), pt(deg, r - thick * 1.1f), r * 0.02f + 2f, StrokeCap.Round)
         }
 
         val labelStyle = TextStyle(color = C.Text, fontSize = (r * 0.11f).toSp(), fontWeight = FontWeight.SemiBold)

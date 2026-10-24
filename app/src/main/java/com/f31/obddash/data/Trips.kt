@@ -78,6 +78,9 @@ class TripRecorder(private val dir: File) {
     private var warmupS: Long? = null
 
     val active: Boolean get() = writer != null
+    val liveKm: Double get() = if (active) distanceKm else 0.0
+    val liveFuelL: Double get() = if (active) fuelL else 0.0
+    fun liveDurationS(now: Long = System.currentTimeMillis()): Long = if (active) (now - startMs) / 1000 else 0
 
     init { dir.mkdirs() }
 

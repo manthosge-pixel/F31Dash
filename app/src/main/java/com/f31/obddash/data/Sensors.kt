@@ -161,6 +161,11 @@ class AppPrefs(ctx: Context) {
         get() = sp.getString("manual_ip", "") ?: ""
         set(v) = sp.edit().putString("manual_ip", v).apply()
 
+    /** 0 = daily, 1 = sport */
+    var dashMode: Int
+        get() = sp.getInt("dash_mode", 0)
+        set(v) = sp.edit().putInt("dash_mode", v).apply()
+
     var demo: Boolean
         get() = sp.getBoolean("demo", false)
         set(v) = sp.edit().putBoolean("demo", v).apply()

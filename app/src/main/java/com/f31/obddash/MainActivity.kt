@@ -57,7 +57,7 @@ import com.f31.obddash.data.ConnStatus
 import com.f31.obddash.data.DashViewModel
 import com.f31.obddash.ui.C
 import com.f31.obddash.ui.CodesScreen
-import com.f31.obddash.ui.DashScreen
+import com.f31.obddash.ui.DashHost
 import com.f31.obddash.ui.Dot
 import com.f31.obddash.ui.GraphsScreen
 import com.f31.obddash.ui.LocalUiScale
@@ -112,6 +112,7 @@ fun F31DashApp(vm: DashViewModel = viewModel()) {
     val history by vm.history.collectAsStateWithLifecycle()
     val status by vm.status.collectAsStateWithLifecycle()
     val recording by vm.recording.collectAsStateWithLifecycle()
+    val dashMode by vm.dashMode.collectAsStateWithLifecycle()
     var screen by rememberSaveable { mutableStateOf(Screen.DASH) }
 
     val alarms = remember(values) { computeAlarms(values) }
@@ -140,11 +141,11 @@ fun F31DashApp(vm: DashViewModel = viewModel()) {
                 Modifier.fillMaxSize().padding(u(8)),
                 verticalArrangement = Arrangement.spacedBy(u(6))
             ) {
-                TopBar(Modifier.fillMaxWidth().height(u(40)), screen, status, recording) { screen = it }
+                TopBar(Modifier.fillMaxWidth().height(u(40)), screen, status, recording, dashMode, { vm.setDashMode(it) }) { screen = it }
 
                 Column(Modifier.fillMaxWidth().weight(1f)) {
                     when (screen) {
-                        Screen.DASH -> DashScreen(values, unsupported, sources.keys, alarms) { silenced = alarmKey }
+                        Screen.DASH -> DashHost(vm, alarms) { silenced = alarmKey }
                         Screen.GRAPHS -> GraphsScreen(history)
                         Screen.CODES -> CodesScreen(vm)
                         Screen.ZERO100 -> ZeroHundredScreen(vm)
@@ -165,17 +166,14 @@ fun F31DashApp(vm: DashViewModel = viewModel()) {
 }
 
 @Composable
-private fun TopBar(modifier: Modifier, screen: Screen, status: ConnStatus, recording: Boolean, onSelect: (Screen) -> Unit) {
+private fun TopBar(
+    modifier: Modifier, screen: Screen, status: ConnStatus, recording: Boolean,
+    dashMode: Int, onDashMode: (Int) -> Unit, onSelect: (Screen) -> Unit,
+) {
     val now by produceState(Date()) {
         while (true) { value = Date(); delay(1000) }
     }
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Panel(Modifier.size(u(40)).clickable { onSelect(Screen.SETTINGS) }) {
-            Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                Icon(Icons.Outlined.Settings, null, tint = C.Text, modifier = Modifier.size(u(20)))
-            }
-        }
-        Spacer(Modifier.width(u(14)))
         MStripes(Modifier.width(u(40)).height(u(14)))
         Spacer(Modifier.width(u(8)))
         Column {
@@ -183,6 +181,13 @@ private fun TopBar(modifier: Modifier, screen: Screen, status: ConnStatus, recor
             Text("N13 1.6 TURBO", color = C.Dim, fontSize = t(9))
         }
         Spacer(Modifier.weight(1f))
+        if (screen == Screen.DASH) {
+            listOf("DAILY", "SPORT").forEachIndexed { i, label ->
+                NavButton(Modifier.width(u(78)).fillMaxHeight(0.85f), label, null, dashMode == i, 10f) { onDashMode(i) }
+                Spacer(Modifier.width(u(6)))
+            }
+            Spacer(Modifier.weight(1f))
+        }
 
         val dotColor = when (status.state) {
             ConnState.CONNECTED -> C.Green

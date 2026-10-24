@@ -38,6 +38,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.foundation.Canvas
 import com.f31.obddash.data.Alarm
 import com.f31.obddash.data.REDLINE_HOT_RPM
 import com.f31.obddash.data.redlineRpm
@@ -74,17 +76,24 @@ private val TILE_ROW_2: List<Pair<SensorId, ImageVector>> = listOf(
 )
 
 @Composable
-fun DashScreen(
+fun SportDash(
     values: Map<SensorId, Double>,
     unsupported: Set<SensorId>,
     configured: Set<SensorId>,
     alarms: List<Alarm>,
     onAlarmTap: () -> Unit,
+    peaks: Map<SensorId, Double>,
+    onResetPeaks: () -> Unit,
 ) {
     fun na(id: SensorId) = id in unsupported || (id !in configured && id != SensorId.BOOST)
     val alarmIds = alarms.map { it.id }.toSet()
 
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(u(6))) {
+        // ---------------- shift light
+        ShiftLight(
+            Modifier.fillMaxWidth().height(u(7)),
+            values[SensorId.RPM], redlineRpm(values[SensorId.OIL_TEMP])
+        )
         // ---------------- hero: RPM · car · boost · gear
         Panel(Modifier.fillMaxWidth().weight(1.35f)) {
             Row(Modifier.fillMaxSize().padding(horizontal = u(8), vertical = u(4)), verticalAlignment = Alignment.CenterVertically) {
@@ -97,7 +106,7 @@ fun DashScreen(
                 val cold = redline < REDLINE_HOT_RPM - 1
                 val overLimit = rpm != null && rpm >= redline
                 ArcGauge(
-                    Modifier.weight(1.25f).fillMaxHeight(),
+                    Modifier.weight(1.25f).fillMaxHeight().clickable(onClick = onResetPeaks),
                     value = if (rpm == null) null else rpmAnim / 1000.0,
                     min = 0.0, max = 7.0, redFrom = redlineAnim / 1000.0,
                     ticks = (0..7).map { it.toDouble() },
@@ -107,6 +116,7 @@ fun DashScreen(
                     unit = if (cold) String.format(Locale.US, "OIL COLD · LIMIT %.0f", redline) else "",
                     valueColor = if (overLimit) C.Red else C.Text,
                     unitColor = C.Amber,
+                    peak = peaks[SensorId.RPM]?.div(1000.0),
                 )
                 Column(
                     Modifier.weight(1.05f).fillMaxHeight(),
@@ -175,14 +185,15 @@ fun DashScreen(
                 val boost = values[SensorId.BOOST]
                 val boostAnim by animateFloatAsState((boost ?: 0.0).toFloat(), tween(120, easing = LinearEasing), label = "boost")
                 ArcGauge(
-                    Modifier.weight(1f).fillMaxHeight(),
+                    Modifier.weight(1f).fillMaxHeight().clickable(onClick = onResetPeaks),
                     value = if (boost == null) null else boostAnim.toDouble(),
                     min = -1.0, max = 2.0, redFrom = 1.0,
                     ticks = listOf(-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0),
                     tickLabel = { String.format(Locale.US, "%.1f", it) },
                     title = "BOOST",
                     valueText = boost?.let { String.format(Locale.US, "%.2f", it) } ?: "--",
-                    unit = "bar",
+                    unit = peaks[SensorId.BOOST]?.let { String.format(Locale.US, "bar · max %.2f", it) } ?: "bar",
+                    peak = peaks[SensorId.BOOST],
                 )
                 Spacer(Modifier.width(u(6)))
                 GearBox(Modifier.weight(0.42f).fillMaxHeight(0.8f), values[SensorId.GEAR], na(SensorId.GEAR))
@@ -222,6 +233,34 @@ private fun GearBox(modifier: Modifier, gear: Double?, unavailable: Boolean) {
             Box(Modifier.height(u(14))) {
                 if (gear == null) Text(if (unavailable) "UNAVAILABLE" else "", color = C.Dim, fontSize = t(7), maxLines = 1)
             }
+        }
+    }
+}
+
+/** F1-style shift light: lights up over the last 1500 rpm before the (oil-temp dependent) limit. */
+@Composable
+fun ShiftLight(modifier: Modifier, rpm: Double?, redline: Double) {
+    val blink = blinkAlpha()
+    Canvas(modifier) {
+        val n = 12
+        val gap = size.height * 0.8f
+        val w = (size.width - gap * (n - 1)) / n
+        val from = redline - 1500.0
+        val lit = if (rpm == null) 0 else (((rpm - from) / 1500.0) * n).toInt().coerceIn(0, n)
+        val over = rpm != null && rpm >= redline
+        for (i in 0 until n) {
+            val col = when {
+                i < n * 0.5 -> C.Green
+                i < n * 0.8 -> C.Amber
+                else -> C.Red
+            }
+            val on = i < lit
+            val c = when {
+                over -> C.Red.copy(alpha = 0.45f + blink)
+                on -> col
+                else -> C.Faint
+            }
+            drawRoundRect(c, Offset(i * (w + gap), 0f), Size(w, size.height), CornerRadius(size.height / 2))
         }
     }
 }
