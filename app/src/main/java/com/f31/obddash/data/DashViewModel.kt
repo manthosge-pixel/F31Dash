@@ -50,7 +50,6 @@ data class Dtc(val code: Int, val status: Int) {
     val active: Boolean get() = status and 0x01 != 0
 }
 
-private const val DYN_DID_LO: Byte = 0x03   // dynamic DID F303
 
 val HISTORY_IDS = listOf(SensorId.RPM, SensorId.BOOST, SensorId.SPEED, SensorId.WATER_TEMP, SensorId.OIL_TEMP, SensorId.AFR)
 private const val HISTORY_LEN = 300
@@ -238,27 +237,44 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     private var dynDefined: List<Pair<SensorId, DidSource>>? = null
     @Volatile private var dynInfo = "-"
 
+    /** Low byte of the dynamic DID that the DME accepted (F3xx). */
+    @Volatile private var dynLo: Byte = 0x03
+
     /**
-     * Defines dynamic DID F303 = the wanted bytes of several BMW DIDs (UDS 2C 01).
+     * Defines a dynamic DID F3xx = the wanted bytes of several BMW DIDs (UDS 2C 01).
      * Lives only in the ECU's RAM; cleared with 2C 03 and lost at ignition off.
+     * Tries a few DID numbers, because the DME may allow only some of them.
      */
     private fun defineDynamic(c: HsfzClient, srcs: List<DidSource>): Boolean {
-        return try {
-            c.request(HsfzClient.ECU_DME, byteArrayOf(0x2C, 0x03, 0xF3.toByte(), DYN_DID_LO), 1000)
-            val req = ArrayList<Byte>()
-            req += listOf<Byte>(0x2C, 0x01, 0xF3.toByte(), DYN_DID_LO)
-            for (s in srcs) {
-                req += (s.did shr 8).toByte(); req += s.did.toByte()
-                req += (s.pos + 1).toByte()          // position, 1-based
-                req += s.bytes.toByte()              // size
+        val tried = StringBuilder()
+        for (lo in listOf(0x03, 0x00, 0x01, 0x02, 0x04, 0x10, 0xFF)) {
+            val b = lo.toByte()
+            try {
+                c.request(HsfzClient.ECU_DME, byteArrayOf(0x2C, 0x03, 0xF3.toByte(), b), 1000)
+                val req = ArrayList<Byte>()
+                req += listOf<Byte>(0x2C, 0x01, 0xF3.toByte(), b)
+                for (s in srcs) {
+                    req += (s.did shr 8).toByte(); req += s.did.toByte()
+                    req += (s.pos + 1).toByte()          // position, 1-based
+                    req += s.bytes.toByte()              // size
+                }
+                val r = c.request(HsfzClient.ECU_DME, req.toByteArray(), 1500)
+                tried.append(String.format("F3%02X→%s ", lo, r.toHex()))
+                if ((r[0].toInt() and 0xFF) == 0x6C) {
+                    dynLo = b
+                    dynInfo = tried.toString()
+                    return true
+                }
+                // anything other than "out of range" won't get better with another number
+                if (r.size >= 3 && (r[2].toInt() and 0xFF) != 0x31) break
+            } catch (e: Exception) {
+                tried.append(String.format("F3%02X→%s ", lo, e.javaClass.simpleName))
+                break
             }
-            val r = c.request(HsfzClient.ECU_DME, req.toByteArray(), 1500)
-            dynInfo = "define → " + r.toHex()
-            (r[0].toInt() and 0xFF) == 0x6C
-        } catch (e: Exception) {
-            dynInfo = "define → " + (e.message ?: e.javaClass.simpleName)
-            false
         }
+        dynInfo = tried.toString()
+        dynOk = false
+        return false
     }
 
     /**
@@ -306,6 +322,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 !d.derived && d.id !in unsup && cfg[d.id] != null && when {
                     d.id == SensorId.GEAR -> cycle % 4 == 0
                     d.id == SensorId.TRANS_TEMP -> cycle % 20 == 5
+                    d.id == SensorId.OIL_PRESSURE -> cycle % 2 == 1
                     d.fast -> true
                     else -> cycle % 6 == 2
                 }
@@ -339,7 +356,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                     dynDefined = if (defineDynamic(c, didAll.map { it.second })) didAll else null
                     if (dynDefined == null) { dynFails++; if (dynFails >= 3) dynOk = false }
                 }
-                val resp = if (dynDefined != null) ask(HsfzClient.ECU_DME, byteArrayOf(0x22, 0xF3.toByte(), DYN_DID_LO)) else null
+                val resp = if (dynDefined != null) ask(HsfzClient.ECU_DME, byteArrayOf(0x22, 0xF3.toByte(), dynLo)) else null
                 if (resp != null && (resp[0].toInt() and 0xFF) == 0x62 && resp.size >= 3 + didAll.sumOf { it.second.bytes }) {
                     dynFails = 0
                     var off = 3
@@ -545,7 +562,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.15 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.16 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
@@ -554,7 +571,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         }
         sb.appendLine("OBD target: %02X".format(obdTarget))
         sb.appendLine("Updates/s: %.1f · avg request: %.0f ms · multi-PID: %s".format(_pollRate.value, client?.avgLatencyMs ?: 0.0, multiObdOk))
-        sb.appendLine("Dynamic DID F303: ok=%s defined=%s · %s".format(dynOk, dynDefined != null, dynInfo))
+        sb.appendLine("Dynamic DID F3xx: ok=%s defined=%s · %s".format(dynOk, dynDefined != null, dynInfo))
         sb.appendLine("Wi-Fi low-latency lock: %s".format(wifiLock?.isHeld == true))
         val tests = listOf(
             0x12 to "01 00",        // supported PIDs 01-20
