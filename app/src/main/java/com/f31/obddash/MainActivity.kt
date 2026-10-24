@@ -184,16 +184,6 @@ private fun TopBar(modifier: Modifier, screen: Screen, status: ConnStatus, recor
         }
         Spacer(Modifier.weight(1f))
 
-        // top tabs (shortcuts to the same screens as the bottom bar)
-        listOf(
-            "DASH" to Screen.DASH, "PERFORMANCE" to Screen.ZERO100,
-            "TRIPS" to Screen.TRIPS, "SENSORS" to Screen.SENSORS
-        ).forEach { (label, s) ->
-            NavButton(Modifier.width(u(if (label == "PERFORMANCE") 96 else 76)).fillMaxHeight(0.85f), label, null, s == screen, 9f) { onSelect(s) }
-            Spacer(Modifier.width(u(6)))
-        }
-        Spacer(Modifier.width(u(10)))
-
         val dotColor = when (status.state) {
             ConnState.CONNECTED -> C.Green
             ConnState.DEMO -> C.Amber
