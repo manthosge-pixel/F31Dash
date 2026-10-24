@@ -34,6 +34,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import com.f31.obddash.data.Alarm
 import com.f31.obddash.data.REDLINE_HOT_RPM
 import com.f31.obddash.data.redlineRpm
@@ -129,7 +133,21 @@ fun DashScreen(
                     Image(
                         painterResource(R.drawable.car), contentDescription = "BMW 316i F31",
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxWidth().weight(0.58f)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(0.58f)
+                            .drawBehind {
+                                // soft blue glow behind the car, no frame
+                                drawOval(
+                                    Brush.radialGradient(
+                                        listOf(C.Blue.copy(alpha = 0.22f), Color.Transparent),
+                                        center = Offset(size.width / 2f, size.height * 0.62f),
+                                        radius = size.width * 0.48f
+                                    ),
+                                    topLeft = Offset(size.width * 0.02f, size.height * 0.15f),
+                                    size = Size(size.width * 0.96f, size.height * 0.95f)
+                                )
+                            }
                     )
                     val speed = values[SensorId.SPEED]
                     Column(Modifier.weight(0.42f), horizontalAlignment = Alignment.CenterHorizontally) {
