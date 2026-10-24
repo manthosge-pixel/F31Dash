@@ -393,7 +393,7 @@ fun SensorsScreen(vm: DashViewModel) {
             LazyColumn(Modifier.fillMaxSize().padding(horizontal = u(10), vertical = u(4))) {
                 item {
                     Text(
-                        "Source format: ECU DID BYTES FACTOR OFFSET [s]   e.g. 12 F40C 2 0.25 0   (empty = off)",
+                        "Source: ECU DID BYTES FACTOR OFFSET [s]   BMW DID e.g. 12 586F 2 0.001 -1   OBD PID e.g. 12 P0C 2 0.25 0   (empty = off)",
                         color = C.Dim, fontSize = t(9), modifier = Modifier.padding(vertical = u(4))
                     )
                 }

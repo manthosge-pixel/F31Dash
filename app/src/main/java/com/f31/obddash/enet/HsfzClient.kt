@@ -78,7 +78,8 @@ class HsfzClient(private val network: Network?) : Closeable {
             if (ctrl != CTRL_DIAG || payload.size < 3) continue            // ack / alive check etc.
             val src = payload[0].toInt() and 0xFF
             val dst = payload[1].toInt() and 0xFF
-            if (src != target || dst != TESTER) continue
+            val functional = target == 0xDF || target == 0x33
+            if ((!functional && src != target) || dst != TESTER) continue
             val resp = payload.copyOfRange(2, payload.size)
             val rsid = resp[0].toInt() and 0xFF
 
@@ -89,6 +90,8 @@ class HsfzClient(private val network: Network?) : Closeable {
             }
             if (rsid != sid + 0x40) continue
             // For ReadDataByIdentifier make sure the DID matches (skip late answers of older requests)
+            // For OBD Mode 01 make sure the PID matches
+            if (sid == 0x01 && uds.size >= 2 && (resp.size < 2 || resp[1] != uds[1])) continue
             if (sid == 0x22 && uds.size >= 3 &&
                 (resp.size < 3 || resp[1] != uds[1] || resp[2] != uds[2])
             ) continue

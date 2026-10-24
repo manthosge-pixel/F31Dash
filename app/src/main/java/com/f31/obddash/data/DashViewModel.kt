@@ -82,6 +82,19 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     val pollRate: StateFlow<Double> = _pollRate.asStateFlow()
 
     @Volatile private var client: HsfzClient? = null
+    /** Where OBD Mode 01 requests go: the DME itself (12) or the OBD functional address (DF). */
+    @Volatile private var obdTarget: Int = HsfzClient.ECU_DME
+
+    private fun detectObdTarget(c: HsfzClient): Int {
+        for (t in listOf(HsfzClient.ECU_DME, 0xDF)) {
+            val ok = try {
+                val r = c.request(t, byteArrayOf(0x01, 0x00), 2000)
+                (r[0].toInt() and 0xFF) == 0x41
+            } catch (e: SocketTimeoutException) { false }
+            if (ok) return t
+        }
+        return HsfzClient.ECU_DME
+    }
     private var job: Job? = null
 
     // ---------------------------------------------------------------- control
@@ -155,6 +168,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 client = c
                 _status.value = ConnStatus(ConnState.CONNECTED, ip + (vin?.let { " · $it" } ?: ""))
                 _unsupported.value = emptySet()
+                obdTarget = detectObdTarget(c)
                 pollLoop(c)
             } catch (e: CancellationException) {
                 throw e
@@ -188,7 +202,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
                 asked++
                 val resp = try {
-                    c.request(src.ecu, byteArrayOf(0x22, (src.did shr 8).toByte(), src.did.toByte()))
+                    val target = if (src.obd && src.ecu == HsfzClient.ECU_DME) obdTarget else src.ecu
+                    c.request(target, src.requestBytes())
                 } catch (e: SocketTimeoutException) {
                     timeouts++
                     _raw.update { it + (def.id to "timeout") }
@@ -304,23 +319,29 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.2 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.3 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
             sb.appendLine("No TCP connection to the car.")
             return@withContext sb.toString()
         }
+        sb.appendLine("OBD target: %02X".format(obdTarget))
         val tests = listOf(
-            0x12 to "3E 00",        // tester present
-            0x12 to "22 F1 90",     // VIN
-            0x12 to "22 F4 0C",     // RPM (OBD DID)
-            0x12 to "22 F4 05",     // coolant (OBD DID)
-            0x12 to "22 F4 00",     // supported PIDs 01-20
-            0x12 to "22 F1 8C",     // ECU serial
-            0x10 to "22 F1 90",     // gateway VIN
-            0x40 to "22 F1 90",     // FEM/BDC VIN
-            0x18 to "22 F1 90",     // gearbox VIN
+            0x12 to "01 00",        // OBD supported PIDs (DME)
+            0x12 to "01 0C",        // OBD RPM (DME)
+            0x12 to "01 05",        // OBD coolant (DME)
+            0xDF to "01 00",        // OBD supported PIDs (functional)
+            0xDF to "01 0C",        // OBD RPM (functional)
+            0x12 to "22 43 00",     // BMW coolant (x0.75-48, N55)
+            0x12 to "22 43 03",     // BMW coolant (x1-40, N55)
+            0x12 to "22 44 02",     // BMW oil temp (N55)
+            0x12 to "22 58 6F",     // BMW oil pressure abs mbar (N55)
+            0x12 to "22 42 05",     // BMW boost actual (community)
+            0x12 to "22 42 01",     // BMW ambient pressure (community)
+            0x12 to "22 58 2C",     // BMW lambda (community)
+            0x12 to "22 4A 4B",     // BMW engine load (N55)
+            0x18 to "22 F1 90",     // gearbox reachable
         )
         for ((ecu, req) in tests) {
             val line = try {
