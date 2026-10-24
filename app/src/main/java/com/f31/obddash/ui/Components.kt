@@ -18,7 +18,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -88,6 +94,8 @@ fun ArcGauge(
     title: String,
     valueText: String,
     unit: String,
+    valueColor: Color = C.Text,
+    unitColor: Color = C.Dim,
 ) {
     val tm = rememberTextMeasurer()
     Canvas(modifier) {
@@ -137,11 +145,11 @@ fun ArcGauge(
         drawText(titleL, topLeft = Offset(cx - titleL.size.width / 2f, cy - r * 0.48f))
         val valL = tm.measure(
             valueText,
-            TextStyle(color = C.Text, fontSize = (r * 0.24f).toSp(), fontWeight = FontWeight.Bold)
+            TextStyle(color = valueColor, fontSize = (r * 0.24f).toSp(), fontWeight = FontWeight.Bold)
         )
         drawText(valL, topLeft = Offset(cx - valL.size.width / 2f, cy - r * 0.33f))
         if (unit.isNotEmpty()) {
-            val unitL = tm.measure(unit, TextStyle(color = C.Dim, fontSize = (r * 0.09f).toSp()))
+            val unitL = tm.measure(unit, TextStyle(color = unitColor, fontSize = (r * 0.09f).toSp(), fontWeight = FontWeight.SemiBold))
             drawText(unitL, topLeft = Offset(cx - unitL.size.width / 2f, cy - r * 0.02f))
         }
     }
@@ -178,10 +186,12 @@ fun SensorTile(
     icon: ImageVector,
     unavailable: Boolean,
     showBar: Boolean = true,
+    alarm: Boolean = false,
 ) {
-    val warn = value != null &&
-        ((def.warnAbove != null && value > def.warnAbove) || (def.warnBelow != null && value < def.warnBelow))
+    val warn = alarm || (value != null &&
+        ((def.warnAbove != null && value > def.warnAbove) || (def.warnBelow != null && value < def.warnBelow)))
     Panel(modifier) {
+        if (alarm) Box(Modifier.fillMaxSize().background(C.Red.copy(alpha = blinkAlpha())))
         Column(Modifier.fillMaxSize().padding(horizontal = u(10), vertical = u(6))) {
             Row(Modifier.fillMaxWidth().weight(1f)) {
                 Icon(icon, null, tint = if (warn) C.Red else C.Text, modifier = Modifier.size(u(26)))
@@ -244,6 +254,17 @@ fun NavButton(
             )
         }
     }
+}
+
+/** 0.1 ↔ 0.55 pulsing alpha for alarms. */
+@Composable
+fun blinkAlpha(): Float {
+    val inf = rememberInfiniteTransition(label = "blink")
+    val a by inf.animateFloat(
+        0.1f, 0.55f,
+        infiniteRepeatable(tween(450), RepeatMode.Reverse), label = "blinkA"
+    )
+    return a
 }
 
 @Composable

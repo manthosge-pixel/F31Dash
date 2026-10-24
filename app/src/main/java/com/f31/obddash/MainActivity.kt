@@ -1,5 +1,7 @@
 package com.f31.obddash
 
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -36,6 +38,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import com.f31.obddash.data.SensorId
+import com.f31.obddash.data.computeAlarms
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -108,6 +113,25 @@ fun F31DashApp(vm: DashViewModel = viewModel()) {
     val status by vm.status.collectAsStateWithLifecycle()
     var screen by rememberSaveable { mutableStateOf(Screen.DASH) }
 
+    val alarms = remember(values) { computeAlarms(values) }
+    val alarmKey = alarms.map { it.id }.toSet()
+    var silenced by remember { mutableStateOf(emptySet<SensorId>()) }
+    // a new alarm (not silenced) beeps every 2 s until it clears or is tapped
+    val beep = alarmKey.isNotEmpty() && !silenced.containsAll(alarmKey)
+    LaunchedEffect(beep) {
+        if (!beep) return@LaunchedEffect
+        val tg = try { ToneGenerator(AudioManager.STREAM_ALARM, 90) } catch (e: Exception) { null }
+        try {
+            while (true) {
+                tg?.startTone(ToneGenerator.TONE_PROP_BEEP2, 500)
+                delay(2000)
+            }
+        } finally {
+            tg?.release()
+        }
+    }
+    LaunchedEffect(alarmKey) { silenced = silenced intersect alarmKey }
+
     BoxWithConstraints(Modifier.fillMaxSize().background(C.Bg)) {
         val scale = minOf(maxWidth.value / 900f, maxHeight.value / 410f).coerceIn(0.55f, 2.2f)
         CompositionLocalProvider(LocalUiScale provides scale) {
@@ -119,7 +143,7 @@ fun F31DashApp(vm: DashViewModel = viewModel()) {
 
                 Column(Modifier.fillMaxWidth().weight(1f)) {
                     when (screen) {
-                        Screen.DASH -> DashScreen(values, unsupported, sources.keys)
+                        Screen.DASH -> DashScreen(values, unsupported, sources.keys, alarms) { silenced = alarmKey }
                         Screen.GRAPHS -> GraphsScreen(history)
                         Screen.CODES -> CodesScreen(vm)
                         Screen.ZERO100 -> ZeroHundredScreen(vm)
