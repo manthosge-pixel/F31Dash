@@ -117,7 +117,7 @@ val SENSORS: List<SensorDef> = listOf(
     SensorDef(SensorId.BATTERY, "BATTERY", "V", 11.0, 16.0, "13", 1, false, obd(0x42, 2, 0.001, 0.0), warnBelow = 12.0),
     SensorDef(SensorId.SPEED, "SPEED", "km/h", 0.0, 240.0, "120", 0, true, obd(0x0D, 1, 1.0, 0.0)),
     SensorDef(SensorId.FUEL_TRIM, "FUEL TRIM ST", "%", -25.0, 25.0, "0", 1, true, obd(0x06, 1, 100.0 / 128.0, -100.0)),
-    SensorDef(SensorId.AFR, "AIR-FUEL RATIO", ":1", 10.0, 18.0, "14", 1, true, obd(0x24, 2, 14.7 * 2.0 / 65536.0, 0.0)),
+    SensorDef(SensorId.AFR, "AIR-FUEL RATIO", ":1", 10.0, 18.0, "14", 1, true, obd(0x34, 2, 14.7 * 2.0 / 65536.0, 0.0)),
     SensorDef(SensorId.OIL_PRESSURE, "OIL PRESSURE", "bar", 0.0, 7.0, "4", 1, true, DidSource(DME, 0x586F, 2, 0.001, -1.0), warnBelow = 1.0),
     SensorDef(SensorId.TRANS_TEMP, "TRANSMISSION TEMP", "°C", 40.0, 140.0, "90", 0, false, DidSource(EGS, 0xDA12, 1, 1.0, -40.0), warnAbove = 120.0),
     SensorDef(SensorId.RUN_TIME, "ENGINE RUN TIME", "h:min:s", 0.0, 0.0, "", 0, false, obd(0x1F, 2, 1.0, 0.0)),

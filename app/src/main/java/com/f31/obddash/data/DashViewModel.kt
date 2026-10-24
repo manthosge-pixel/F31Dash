@@ -321,7 +321,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.5 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.6 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
@@ -333,10 +333,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             0x12 to "01 00",        // supported PIDs 01-20
             0x12 to "01 20",        // supported PIDs 21-40
             0x12 to "01 40",        // supported PIDs 41-60
-            0x12 to "01 24",        // O2 sensor 1 lambda (wideband)
             0x12 to "01 34",        // O2 sensor 1 lambda + current
             0x12 to "01 44",        // commanded lambda
-            0x12 to "01 5C",        // oil temp (OBD)
             0x12 to "01 0B",        // MAP (OBD)
             0x12 to "22 44 02",     // BMW oil temp
             0x12 to "22 42 05",     // BMW charge pressure
