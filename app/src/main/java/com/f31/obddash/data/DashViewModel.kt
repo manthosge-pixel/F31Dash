@@ -86,7 +86,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var obdTarget: Int = HsfzClient.ECU_DME
 
     private fun detectObdTarget(c: HsfzClient): Int {
-        for (t in listOf(HsfzClient.ECU_DME, 0xDF)) {
+        // The DME answers Mode 01 directly; DF only as a last resort (other modules answer there too).
+        for (t in listOf(HsfzClient.ECU_DME, HsfzClient.ECU_DME, HsfzClient.ECU_DME, 0xDF)) {
             val ok = try {
                 val r = c.request(t, byteArrayOf(0x01, 0x00), 2000)
                 (r[0].toInt() and 0xFF) == 0x41
@@ -319,7 +320,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.3 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.4 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
@@ -328,19 +329,18 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         }
         sb.appendLine("OBD target: %02X".format(obdTarget))
         val tests = listOf(
-            0x12 to "01 00",        // OBD supported PIDs (DME)
-            0x12 to "01 0C",        // OBD RPM (DME)
-            0x12 to "01 05",        // OBD coolant (DME)
-            0xDF to "01 00",        // OBD supported PIDs (functional)
-            0xDF to "01 0C",        // OBD RPM (functional)
-            0x12 to "22 43 00",     // BMW coolant (x0.75-48, N55)
-            0x12 to "22 43 03",     // BMW coolant (x1-40, N55)
-            0x12 to "22 44 02",     // BMW oil temp (N55)
-            0x12 to "22 58 6F",     // BMW oil pressure abs mbar (N55)
-            0x12 to "22 42 05",     // BMW boost actual (community)
-            0x12 to "22 42 01",     // BMW ambient pressure (community)
-            0x12 to "22 58 2C",     // BMW lambda (community)
-            0x12 to "22 4A 4B",     // BMW engine load (N55)
+            0x12 to "01 00",        // supported PIDs 01-20
+            0x12 to "01 20",        // supported PIDs 21-40
+            0x12 to "01 40",        // supported PIDs 41-60
+            0x12 to "01 24",        // O2 sensor 1 lambda (wideband)
+            0x12 to "01 34",        // O2 sensor 1 lambda + current
+            0x12 to "01 44",        // commanded lambda
+            0x12 to "01 5C",        // oil temp (OBD)
+            0x12 to "01 0B",        // MAP (OBD)
+            0x12 to "22 44 02",     // BMW oil temp
+            0x12 to "22 42 05",     // BMW charge pressure
+            0x12 to "22 42 01",     // BMW ambient pressure
+            0x12 to "22 58 6F",     // BMW oil pressure
             0x18 to "22 F1 90",     // gearbox reachable
         )
         for ((ecu, req) in tests) {
@@ -351,8 +351,12 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             }
             sb.appendLine(String.format("%02X  %-9s → %s", ecu, req, line))
         }
-        sb.appendLine("--- last sensor answers ---")
-        _raw.value.forEach { (id, r) -> sb.appendLine("$id: $r") }
+        sb.appendLine("--- sensors (raw → value) ---")
+        _raw.value.forEach { (id, r) ->
+            val def = SENSOR_MAP[id]
+            sb.appendLine("$id: $r → ${def?.formatValue(_values.value[id]) ?: ""} ${def?.unit ?: ""}")
+        }
+        sb.appendLine("BOOST: ${SENSOR_MAP.getValue(SensorId.BOOST).formatValue(_values.value[SensorId.BOOST])} bar")
         _unsupported.value = emptySet()
         sb.toString()
     }
