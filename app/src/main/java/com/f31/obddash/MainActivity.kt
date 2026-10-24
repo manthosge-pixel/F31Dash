@@ -1,0 +1,198 @@
+package com.f31.obddash
+
+import android.os.Bundle
+import android.view.WindowManager
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DirectionsCar
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.Route
+import androidx.compose.material.icons.outlined.Sensors
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Timeline
+import androidx.compose.material.icons.outlined.Timer
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.f31.obddash.data.ConnState
+import com.f31.obddash.data.ConnStatus
+import com.f31.obddash.data.DashViewModel
+import com.f31.obddash.ui.C
+import com.f31.obddash.ui.CodesScreen
+import com.f31.obddash.ui.DashScreen
+import com.f31.obddash.ui.Dot
+import com.f31.obddash.ui.GraphsScreen
+import com.f31.obddash.ui.LocalUiScale
+import com.f31.obddash.ui.MStripes
+import com.f31.obddash.ui.NavButton
+import com.f31.obddash.ui.Panel
+import com.f31.obddash.ui.SensorsScreen
+import com.f31.obddash.ui.SettingsScreen
+import com.f31.obddash.ui.TrackScreen
+import com.f31.obddash.ui.ZeroHundredScreen
+import com.f31.obddash.ui.t
+import com.f31.obddash.ui.u
+import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+enum class Screen(val label: String, val icon: ImageVector) {
+    DASH("DASH", Icons.Outlined.DirectionsCar),
+    GRAPHS("GRAPHS", Icons.Outlined.Timeline),
+    CODES("CODES", Icons.Outlined.ErrorOutline),
+    ZERO100("0-100", Icons.Outlined.Timer),
+    TRACK("TRACK", Icons.Outlined.Route),
+    SETTINGS("SETTINGS", Icons.Outlined.Settings),
+    SENSORS("SENSORS", Icons.Outlined.Sensors),
+}
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+        setContent {
+            MaterialTheme(colorScheme = darkColorScheme(primary = C.Blue, background = C.Bg, surface = C.Panel)) {
+                F31DashApp()
+            }
+        }
+    }
+}
+
+@Composable
+fun F31DashApp(vm: DashViewModel = viewModel()) {
+    LaunchedEffect(Unit) { vm.start() }
+
+    val values by vm.values.collectAsStateWithLifecycle()
+    val unsupported by vm.unsupported.collectAsStateWithLifecycle()
+    val sources by vm.sources.collectAsStateWithLifecycle()
+    val history by vm.history.collectAsStateWithLifecycle()
+    val status by vm.status.collectAsStateWithLifecycle()
+    var screen by rememberSaveable { mutableStateOf(Screen.DASH) }
+
+    BoxWithConstraints(Modifier.fillMaxSize().background(C.Bg)) {
+        val scale = minOf(maxWidth.value / 900f, maxHeight.value / 410f).coerceIn(0.55f, 2.2f)
+        CompositionLocalProvider(LocalUiScale provides scale) {
+            Column(
+                Modifier.fillMaxSize().padding(u(8)),
+                verticalArrangement = Arrangement.spacedBy(u(6))
+            ) {
+                TopBar(Modifier.fillMaxWidth().height(u(40)), screen, status) { screen = it }
+
+                Column(Modifier.fillMaxWidth().weight(1f)) {
+                    when (screen) {
+                        Screen.DASH -> DashScreen(values, unsupported, sources.keys)
+                        Screen.GRAPHS -> GraphsScreen(history)
+                        Screen.CODES -> CodesScreen(vm)
+                        Screen.ZERO100 -> ZeroHundredScreen(vm)
+                        Screen.TRACK -> TrackScreen()
+                        Screen.SETTINGS -> SettingsScreen(vm)
+                        Screen.SENSORS -> SensorsScreen(vm)
+                    }
+                }
+
+                Row(Modifier.fillMaxWidth().height(u(40)), horizontalArrangement = Arrangement.spacedBy(u(6))) {
+                    Screen.entries.forEach { s ->
+                        NavButton(Modifier.weight(1f).fillMaxHeight(), s.label, s.icon, s == screen) { screen = s }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TopBar(modifier: Modifier, screen: Screen, status: ConnStatus, onSelect: (Screen) -> Unit) {
+    val now by produceState(Date()) {
+        while (true) { value = Date(); delay(1000) }
+    }
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Panel(Modifier.size(u(40)).clickable { onSelect(Screen.SETTINGS) }) {
+            Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                Icon(Icons.Outlined.Settings, null, tint = C.Text, modifier = Modifier.size(u(20)))
+            }
+        }
+        Spacer(Modifier.width(u(14)))
+        MStripes(Modifier.width(u(40)).height(u(14)))
+        Spacer(Modifier.width(u(8)))
+        Column {
+            Text("BMW 316i F31", color = C.Text, fontSize = t(13), fontWeight = FontWeight.Bold)
+            Text("N13 1.6 TURBO", color = C.Dim, fontSize = t(9))
+        }
+        Spacer(Modifier.weight(1f))
+
+        // top tabs (shortcuts to the same screens as the bottom bar)
+        listOf(
+            "DASH" to Screen.DASH, "PERFORMANCE" to Screen.ZERO100,
+            "LOGS" to Screen.GRAPHS, "SENSORS" to Screen.SENSORS
+        ).forEach { (label, s) ->
+            NavButton(Modifier.width(u(if (label == "PERFORMANCE") 96 else 76)).fillMaxHeight(0.85f), label, null, s == screen, 9f) { onSelect(s) }
+            Spacer(Modifier.width(u(6)))
+        }
+        Spacer(Modifier.width(u(10)))
+
+        val dotColor = when (status.state) {
+            ConnState.CONNECTED -> C.Green
+            ConnState.DEMO -> C.Amber
+            ConnState.SEARCHING, ConnState.CONNECTING -> C.Blue
+            ConnState.ERROR -> C.Red
+            ConnState.DISCONNECTED -> C.Dim
+        }
+        val stateText = when (status.state) {
+            ConnState.CONNECTED -> "ENET CONNECTED"
+            ConnState.DEMO -> "DEMO MODE"
+            ConnState.SEARCHING -> "SEARCHING…"
+            ConnState.CONNECTING -> "CONNECTING…"
+            ConnState.ERROR -> "ENET ERROR"
+            ConnState.DISCONNECTED -> "ENET DISCONNECTED"
+        }
+        Dot(dotColor, u(9))
+        Spacer(Modifier.width(u(8)))
+        Column(Modifier.width(u(150))) {
+            Text(stateText, color = C.Text, fontSize = t(9), maxLines = 1)
+            Text(status.detail, color = C.Dim, fontSize = t(7), maxLines = 1)
+        }
+        Column(horizontalAlignment = Alignment.End) {
+            Text(SimpleDateFormat("HH:mm", Locale.getDefault()).format(now), color = C.Text, fontSize = t(13))
+            Text(SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(now), color = C.Dim, fontSize = t(7))
+        }
+    }
+}
