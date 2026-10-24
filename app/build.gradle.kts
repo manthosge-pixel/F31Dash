@@ -12,8 +12,8 @@ android {
         applicationId = "com.f31.obddash"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.14"
+        versionCode = 15
+        versionName = "0.15"
     }
 
     signingConfigs {
