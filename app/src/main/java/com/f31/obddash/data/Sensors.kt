@@ -115,7 +115,7 @@ private fun obd(pid: Int, bytes: Int, factor: Double, offset: Double) =
  * Defaults: standard OBD Mode 01 PIDs (the DME rejects the UDS F4xx form: 7F 22 31).
  * Oil pressure uses BMW DID 586F (absolute mbar, verified on an N55 MEVD17.2; -1 bar ≈ gauge).
  * Gear: EGS (18) DID DA2E byte 1 = engaged gear 1..8 (verified on an F10 ZF 8HP); 0xFF at standstill.
- * Gearbox temp: EGS DID DA12, 1 byte — scale not confirmed (raw − 40 is a guess).
+ * Gearbox temp: EGS DID DA12, answer 2 bytes, value in byte 1 — raw − 40 (plausible, not confirmed).
  */
 val SENSORS: List<SensorDef> = listOf(
     SensorDef(SensorId.RPM, "RPM", "rpm", 0.0, 7000.0, "3500", 0, true, obd(0x0C, 2, 0.25, 0.0), warnAbove = 5000.0),
@@ -132,7 +132,7 @@ val SENSORS: List<SensorDef> = listOf(
     SensorDef(SensorId.FUEL_TRIM, "FUEL TRIM ST", "%", -25.0, 25.0, "0", 1, true, obd(0x06, 1, 100.0 / 128.0, -100.0)),
     SensorDef(SensorId.AFR, "AIR-FUEL RATIO", ":1", 10.0, 18.0, "14", 1, true, obd(0x34, 2, 14.7 * 2.0 / 65536.0, 0.0)),
     SensorDef(SensorId.OIL_PRESSURE, "OIL PRESSURE", "bar", 0.0, 7.0, "4", 1, true, DidSource(DME, 0x586F, 2, 0.001, -1.0)),
-    SensorDef(SensorId.TRANS_TEMP, "TRANSMISSION TEMP", "°C", 40.0, 140.0, "90", 0, false, DidSource(EGS, 0xDA12, 1, 1.0, -40.0), warnAbove = 120.0),
+    SensorDef(SensorId.TRANS_TEMP, "TRANSMISSION TEMP", "°C", 40.0, 140.0, "90", 0, false, DidSource(EGS, 0xDA12, 1, 1.0, -40.0, pos = 1), warnAbove = 120.0),
     SensorDef(SensorId.RUN_TIME, "ENGINE RUN TIME", "h:min:s", 0.0, 0.0, "", 0, false, obd(0x1F, 2, 1.0, 0.0)),
 )
 

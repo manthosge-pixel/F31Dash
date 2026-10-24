@@ -1,6 +1,8 @@
 package com.f31.obddash.data
 
 import android.app.Application
+import android.net.wifi.WifiManager
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.f31.obddash.enet.EnetDiscovery
@@ -43,6 +45,8 @@ data class Dtc(val code: Int, val status: Int) {
     val statusHex: String get() = "%02X".format(status)
     val active: Boolean get() = status and 0x01 != 0
 }
+
+private const val DYN_DID_LO: Byte = 0x03   // dynamic DID F303
 
 val HISTORY_IDS = listOf(SensorId.RPM, SensorId.BOOST, SensorId.SPEED, SensorId.WATER_TEMP, SensorId.OIL_TEMP, SensorId.AFR)
 private const val HISTORY_LEN = 300
@@ -100,6 +104,23 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------------------------------------------------------------- control
 
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    @Suppress("DEPRECATION")
+    private fun lockWifi(on: Boolean) {
+        try {
+            if (on) {
+                if (wifiLock?.isHeld == true) return
+                val wm = getApplication<Application>().getSystemService(WifiManager::class.java) ?: return
+                val mode = if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                           else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                wifiLock = wm.createWifiLock(mode, "f31dash").apply { setReferenceCounted(false); acquire() }
+            } else {
+                wifiLock?.release(); wifiLock = null
+            }
+        } catch (_: Exception) {}
+    }
+
     fun start() {
         if (job?.isActive == true) return
         job = viewModelScope.launch(Dispatchers.IO) {
@@ -108,6 +129,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun stop() {
+        lockWifi(false)
         job?.cancel()
         job = null
         client?.close()
@@ -147,6 +169,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        lockWifi(false)
         client?.close()
         super.onCleared()
     }
@@ -154,6 +177,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     // ---------------------------------------------------------------- ENET
 
     private suspend fun runEnet() {
+        lockWifi(true)
         while (currentCoroutineContext().isActive) {
             try {
                 val net = NetworkUtil.findWifiNetwork(getApplication())
@@ -184,7 +208,33 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     @Volatile private var multiObdOk = true
-    @Volatile private var multiDidOk = true
+    @Volatile private var dynOk = true
+    @Volatile private var dynFails = 0
+    private var dynDefined: List<Pair<SensorId, DidSource>>? = null
+    @Volatile private var dynInfo = "-"
+
+    /**
+     * Defines dynamic DID F303 = the wanted bytes of several BMW DIDs (UDS 2C 01).
+     * Lives only in the ECU's RAM; cleared with 2C 03 and lost at ignition off.
+     */
+    private fun defineDynamic(c: HsfzClient, srcs: List<DidSource>): Boolean {
+        return try {
+            c.request(HsfzClient.ECU_DME, byteArrayOf(0x2C, 0x03, 0xF3.toByte(), DYN_DID_LO), 1000)
+            val req = ArrayList<Byte>()
+            req += listOf<Byte>(0x2C, 0x01, 0xF3.toByte(), DYN_DID_LO)
+            for (s in srcs) {
+                req += (s.did shr 8).toByte(); req += s.did.toByte()
+                req += (s.pos + 1).toByte()          // position, 1-based
+                req += s.bytes.toByte()              // size
+            }
+            val r = c.request(HsfzClient.ECU_DME, req.toByteArray(), 1500)
+            dynInfo = "define → " + r.toHex()
+            (r[0].toInt() and 0xFF) == 0x6C
+        } catch (e: Exception) {
+            dynInfo = "define → " + (e.message ?: e.javaClass.simpleName)
+            false
+        }
+    }
 
     /**
      * One cycle = few requests: all fast OBD PIDs in one Mode 01 request (up to 6 PIDs),
@@ -197,7 +247,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         var cycles = 0
         var rateT0 = System.currentTimeMillis()
         multiObdOk = true
-        multiDidOk = true
+        dynOk = true
+        dynFails = 0
+        dynDefined = null
 
         while (currentCoroutineContext().isActive) {
             val cfg = _sources.value
@@ -227,7 +279,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
             val due: List<Pair<SensorId, DidSource>> = SENSORS.filter { d ->
                 !d.derived && d.id !in unsup && cfg[d.id] != null && when {
-                    d.id == SensorId.GEAR -> cycle % 3 == 0
+                    d.id == SensorId.GEAR -> cycle % 4 == 0
                     d.id == SensorId.TRANS_TEMP -> cycle % 20 == 5
                     d.fast -> true
                     else -> cycle % 6 == 2
@@ -252,24 +304,33 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } else singles += obdItems
 
-            // ---- 2. BMW DIDs of the DME, several per request
-            val didItems = due.filter { (_, s) -> !s.obd && s.ecu == HsfzClient.ECU_DME }
-            if (multiDidOk && didItems.size > 1) {
-                for (chunk in didItems.chunked(4)) {
-                    val req = ByteArray(1 + chunk.size * 2)
-                    req[0] = 0x22
-                    chunk.forEachIndexed { i, (_, s) ->
-                        req[1 + i * 2] = (s.did shr 8).toByte(); req[2 + i * 2] = s.did.toByte()
-                    }
-                    val resp = ask(HsfzClient.ECU_DME, req) ?: continue
-                    val starts = splitDids(resp, chunk.map { it.second })
-                    if (starts == null) { multiDidOk = false; singles += chunk; continue }
-                    chunk.forEachIndexed { i, (id, src) ->
-                        val v = src.decodeData(resp, starts[i])
-                        if (v != null) good(id, v, "multi " + resp.toHex()) else bad(id, resp.toHex())
-                    }
+            // ---- 2. BMW DIDs of the DME: all of them in one dynamic DID (2C → 22 F303)
+            val didAll = SENSORS.mapNotNull { d ->
+                val src = cfg[d.id]
+                if (!d.derived && d.id !in unsup && src != null && !src.obd && src.ecu == HsfzClient.ECU_DME) d.id to src else null
+            }
+            if (dynOk && didAll.size > 1) {
+                if (dynDefined != didAll) {
+                    dynDefined = if (defineDynamic(c, didAll.map { it.second })) didAll else null
+                    if (dynDefined == null) { dynFails++; if (dynFails >= 3) dynOk = false }
                 }
-            } else singles += didItems
+                val resp = if (dynDefined != null) ask(HsfzClient.ECU_DME, byteArrayOf(0x22, 0xF3.toByte(), DYN_DID_LO)) else null
+                if (resp != null && (resp[0].toInt() and 0xFF) == 0x62 && resp.size >= 3 + didAll.sumOf { it.second.bytes }) {
+                    dynFails = 0
+                    var off = 3
+                    for ((id, src) in didAll) {
+                        val v = src.copy(pos = 0).decodeData(resp, off)
+                        if (v != null) good(id, v, "dyn " + resp.toHex()) else bad(id, resp.toHex())
+                        off += src.bytes
+                    }
+                } else {
+                    if (resp != null) dynInfo = "read → " + resp.toHex()
+                    dynDefined = null
+                    dynFails++
+                    if (dynFails >= 3) dynOk = false
+                    singles += due.filter { (_, s) -> !s.obd && s.ecu == HsfzClient.ECU_DME }
+                }
+            } else singles += due.filter { (_, s) -> !s.obd && s.ecu == HsfzClient.ECU_DME }
 
             // ---- 3. everything else, one by one
             singles += due.filter { (_, s) -> !(s.obd && s.ecu == HsfzClient.ECU_DME && OBD_PID_LEN.containsKey(s.did)) && !(!s.obd && s.ecu == HsfzClient.ECU_DME) }
@@ -408,7 +469,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.8 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.9 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
@@ -416,7 +477,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             return@withContext sb.toString()
         }
         sb.appendLine("OBD target: %02X".format(obdTarget))
-        sb.appendLine("Updates/s: %.1f · multi-PID: %s · multi-DID: %s".format(_pollRate.value, multiObdOk, multiDidOk))
+        sb.appendLine("Updates/s: %.1f · avg request: %.0f ms · multi-PID: %s".format(_pollRate.value, client?.avgLatencyMs ?: 0.0, multiObdOk))
+        sb.appendLine("Dynamic DID F303: ok=%s defined=%s · %s".format(dynOk, dynDefined != null, dynInfo))
+        sb.appendLine("Wi-Fi low-latency lock: %s".format(wifiLock?.isHeld == true))
         val tests = listOf(
             0x12 to "01 00",        // supported PIDs 01-20
             0x12 to "01 20",        // supported PIDs 21-40

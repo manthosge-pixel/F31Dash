@@ -42,6 +42,15 @@ class HsfzClient(private val network: Network?) : Closeable {
     private var input: DataInputStream? = null
     private var output: OutputStream? = null
 
+    /** Average request round-trip (ms), exponential moving average. */
+    @Volatile var avgLatencyMs: Double = 0.0
+        private set
+
+    private fun noteLatency(t0: Long) {
+        val ms = (System.nanoTime() - t0) / 1e6
+        avgLatencyMs = if (avgLatencyMs == 0.0) ms else avgLatencyMs * 0.8 + ms * 0.2
+    }
+
     val isConnected: Boolean
         get() = socket?.let { it.isConnected && !it.isClosed } == true
 
@@ -68,6 +77,7 @@ class HsfzClient(private val network: Network?) : Closeable {
             .put(target.toByte())
             .put(uds)
             .array()
+        val t0 = System.nanoTime()
         out.write(frame)
         out.flush()
 
@@ -86,6 +96,7 @@ class HsfzClient(private val network: Network?) : Closeable {
             if (rsid == 0x7F && resp.size >= 3) {
                 if ((resp[1].toInt() and 0xFF) != sid) continue
                 if ((resp[2].toInt() and 0xFF) == 0x78) continue          // response pending
+                noteLatency(t0)
                 return resp
             }
             if (rsid != sid + 0x40) continue
@@ -95,6 +106,7 @@ class HsfzClient(private val network: Network?) : Closeable {
             if (sid == 0x22 && uds.size >= 3 &&
                 (resp.size < 3 || resp[1] != uds[1] || resp[2] != uds[2])
             ) continue
+            noteLatency(t0)
             return resp
         }
         throw SocketTimeoutException("No response from ECU %02X".format(target))
