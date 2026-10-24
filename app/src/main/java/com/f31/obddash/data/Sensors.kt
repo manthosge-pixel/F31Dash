@@ -5,7 +5,8 @@ import java.util.Locale
 
 enum class SensorId {
     RPM, BOOST, GEAR, WATER_TEMP, OIL_TEMP, INTAKE_TEMP, MAP, BARO, THROTTLE, BATTERY,
-    SPEED, FUEL_TRIM, AFR, OIL_PRESSURE, TRANS_TEMP, RUN_TIME
+    SPEED, FUEL_TRIM, AFR, OIL_PRESSURE, TRANS_TEMP, RUN_TIME,
+    MAF, FUEL_RATE, CONSUMPTION
 }
 
 /**
@@ -134,6 +135,9 @@ val SENSORS: List<SensorDef> = listOf(
     SensorDef(SensorId.OIL_PRESSURE, "OIL PRESSURE", "bar", 0.0, 7.0, "4", 1, true, DidSource(DME, 0x586F, 2, 0.001, -1.0)),
     SensorDef(SensorId.TRANS_TEMP, "TRANSMISSION TEMP", "°C", 40.0, 140.0, "90", 0, false, DidSource(EGS, 0xDA12, 1, 1.0, -40.0, pos = 1), warnAbove = 120.0),
     SensorDef(SensorId.RUN_TIME, "ENGINE RUN TIME", "h:min:s", 0.0, 0.0, "", 0, false, obd(0x1F, 2, 1.0, 0.0)),
+    SensorDef(SensorId.MAF, "AIR MASS (MAF)", "g/s", 0.0, 150.0, "75", 1, true, obd(0x10, 2, 0.01, 0.0)),
+    SensorDef(SensorId.FUEL_RATE, "FUEL RATE", "L/h", 0.0, 40.0, "20", 1, true, null, derived = true),
+    SensorDef(SensorId.CONSUMPTION, "CONSUMPTION", "L/100", 0.0, 30.0, "15", 1, true, null, derived = true),
 )
 
 val SENSOR_MAP: Map<SensorId, SensorDef> = SENSORS.associateBy { it.id }

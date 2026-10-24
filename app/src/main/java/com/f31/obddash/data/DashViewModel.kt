@@ -169,6 +169,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        endTrip()
         lockWifi(false)
         client?.close()
         super.onCleared()
@@ -200,6 +201,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 _status.value = ConnStatus(ConnState.ERROR, e.message ?: e.javaClass.simpleName)
             } finally {
+                endTrip()
                 client?.close()
                 client = null
             }
@@ -346,7 +348,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
             if (raws.isNotEmpty()) _raw.update { it + raws }
             deriveBoost(vals)
+            deriveFuel(vals)
             publish(vals)
+            record(vals)
             cycle++
             cycles++
 
@@ -387,6 +391,50 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             i += 2 + s.pos + s.bytes
         }
         return if (i == resp.size) out else null
+    }
+
+    /**
+     * Fuel from air: fuel g/s = MAF / AFR (measured; 14.7 if unknown),
+     * petrol ≈ 745 g per litre. L/100 km only when moving.
+     */
+    private fun deriveFuel(vals: HashMap<SensorId, Double>) {
+        val maf = vals[SensorId.MAF]
+        if (maf == null) { vals.remove(SensorId.FUEL_RATE); vals.remove(SensorId.CONSUMPTION); return }
+        val afr = (vals[SensorId.AFR] ?: 14.7).coerceIn(9.0, 30.0)
+        val lh = maf / afr / 745.0 * 3600.0
+        vals[SensorId.FUEL_RATE] = lh
+        val speed = vals[SensorId.SPEED] ?: 0.0
+        if (speed > 3.0) vals[SensorId.CONSUMPTION] = (lh / speed * 100.0).coerceAtMost(99.9)
+        else vals.remove(SensorId.CONSUMPTION)
+    }
+
+    // ---------------------------------------------------------------- trips
+
+    private val tripDir = java.io.File(app.filesDir, "trips")
+    private val recorder = TripRecorder(tripDir)
+
+    private val _trips = MutableStateFlow(TripRecorder.loadAll(tripDir))
+    val trips: StateFlow<List<TripSummary>> = _trips.asStateFlow()
+
+    private val _recording = MutableStateFlow(false)
+    val recording: StateFlow<Boolean> = _recording.asStateFlow()
+
+    private fun record(vals: Map<SensorId, Double>) {
+        val done = recorder.onSample(vals)
+        _recording.value = recorder.active
+        if (done != null) _trips.value = TripRecorder.loadAll(tripDir)
+    }
+
+    private fun endTrip() {
+        if (recorder.end() != null) _trips.value = TripRecorder.loadAll(tripDir)
+        _recording.value = false
+    }
+
+    fun tripCsv(name: String): java.io.File = java.io.File(tripDir, "$name.csv")
+
+    fun deleteTrip(name: String) {
+        TripRecorder.delete(tripDir, name)
+        _trips.value = TripRecorder.loadAll(tripDir)
     }
 
     private fun deriveBoost(vals: HashMap<SensorId, Double>) {
@@ -469,7 +517,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.9 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.10 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
@@ -541,7 +589,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             vals[SensorId.OIL_PRESSURE] = 1.5 + 3.0 * load
             vals[SensorId.TRANS_TEMP] = 82 + 4 * sin(t * 0.04)
             vals[SensorId.RUN_TIME] = t
+            vals[SensorId.MAF] = 3.0 + 70.0 * load
             deriveBoost(vals)
+            deriveFuel(vals)
             publish(vals)
             delay(50)
         }

@@ -132,13 +132,26 @@ fun DashScreen(
                         modifier = Modifier.fillMaxWidth().weight(0.58f)
                     )
                     val speed = values[SensorId.SPEED]
-                    Row(Modifier.weight(0.42f), verticalAlignment = Alignment.Bottom) {
+                    Column(Modifier.weight(0.42f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                speed?.let { String.format(Locale.US, "%.0f", it) } ?: "--",
+                                color = C.Text, fontSize = t(36), fontWeight = FontWeight.Bold, maxLines = 1
+                            )
+                            Spacer(Modifier.width(u(6)))
+                            Text("km/h", color = C.Dim, fontSize = t(11), modifier = Modifier.padding(bottom = u(7)))
+                        }
+                        // 5. fuel consumption
+                        val l100 = values[SensorId.CONSUMPTION]
+                        val lh = values[SensorId.FUEL_RATE]
                         Text(
-                            speed?.let { String.format(Locale.US, "%.0f", it) } ?: "--",
-                            color = C.Text, fontSize = t(40), fontWeight = FontWeight.Bold, maxLines = 1
+                            when {
+                                l100 != null -> String.format(Locale.US, "%.1f L/100 km", l100)
+                                lh != null -> String.format(Locale.US, "%.1f L/h", lh)
+                                else -> ""
+                            },
+                            color = C.BlueLight, fontSize = t(11), maxLines = 1
                         )
-                        Spacer(Modifier.width(u(6)))
-                        Text("km/h", color = C.Dim, fontSize = t(11), modifier = Modifier.padding(bottom = u(8)))
                     }
                 }
                 val boost = values[SensorId.BOOST]

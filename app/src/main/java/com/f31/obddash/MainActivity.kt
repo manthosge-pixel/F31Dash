@@ -66,7 +66,7 @@ import com.f31.obddash.ui.NavButton
 import com.f31.obddash.ui.Panel
 import com.f31.obddash.ui.SensorsScreen
 import com.f31.obddash.ui.SettingsScreen
-import com.f31.obddash.ui.TrackScreen
+import com.f31.obddash.ui.TripsScreen
 import com.f31.obddash.ui.ZeroHundredScreen
 import com.f31.obddash.ui.t
 import com.f31.obddash.ui.u
@@ -80,7 +80,7 @@ enum class Screen(val label: String, val icon: ImageVector) {
     GRAPHS("GRAPHS", Icons.Outlined.Timeline),
     CODES("CODES", Icons.Outlined.ErrorOutline),
     ZERO100("0-100", Icons.Outlined.Timer),
-    TRACK("TRACK", Icons.Outlined.Route),
+    TRIPS("TRIPS", Icons.Outlined.Route),
     SETTINGS("SETTINGS", Icons.Outlined.Settings),
     SENSORS("SENSORS", Icons.Outlined.Sensors),
 }
@@ -111,6 +111,7 @@ fun F31DashApp(vm: DashViewModel = viewModel()) {
     val sources by vm.sources.collectAsStateWithLifecycle()
     val history by vm.history.collectAsStateWithLifecycle()
     val status by vm.status.collectAsStateWithLifecycle()
+    val recording by vm.recording.collectAsStateWithLifecycle()
     var screen by rememberSaveable { mutableStateOf(Screen.DASH) }
 
     val alarms = remember(values) { computeAlarms(values) }
@@ -139,7 +140,7 @@ fun F31DashApp(vm: DashViewModel = viewModel()) {
                 Modifier.fillMaxSize().padding(u(8)),
                 verticalArrangement = Arrangement.spacedBy(u(6))
             ) {
-                TopBar(Modifier.fillMaxWidth().height(u(40)), screen, status) { screen = it }
+                TopBar(Modifier.fillMaxWidth().height(u(40)), screen, status, recording) { screen = it }
 
                 Column(Modifier.fillMaxWidth().weight(1f)) {
                     when (screen) {
@@ -147,7 +148,7 @@ fun F31DashApp(vm: DashViewModel = viewModel()) {
                         Screen.GRAPHS -> GraphsScreen(history)
                         Screen.CODES -> CodesScreen(vm)
                         Screen.ZERO100 -> ZeroHundredScreen(vm)
-                        Screen.TRACK -> TrackScreen()
+                        Screen.TRIPS -> TripsScreen(vm)
                         Screen.SETTINGS -> SettingsScreen(vm)
                         Screen.SENSORS -> SensorsScreen(vm)
                     }
@@ -164,7 +165,7 @@ fun F31DashApp(vm: DashViewModel = viewModel()) {
 }
 
 @Composable
-private fun TopBar(modifier: Modifier, screen: Screen, status: ConnStatus, onSelect: (Screen) -> Unit) {
+private fun TopBar(modifier: Modifier, screen: Screen, status: ConnStatus, recording: Boolean, onSelect: (Screen) -> Unit) {
     val now by produceState(Date()) {
         while (true) { value = Date(); delay(1000) }
     }
@@ -186,7 +187,7 @@ private fun TopBar(modifier: Modifier, screen: Screen, status: ConnStatus, onSel
         // top tabs (shortcuts to the same screens as the bottom bar)
         listOf(
             "DASH" to Screen.DASH, "PERFORMANCE" to Screen.ZERO100,
-            "LOGS" to Screen.GRAPHS, "SENSORS" to Screen.SENSORS
+            "TRIPS" to Screen.TRIPS, "SENSORS" to Screen.SENSORS
         ).forEach { (label, s) ->
             NavButton(Modifier.width(u(if (label == "PERFORMANCE") 96 else 76)).fillMaxHeight(0.85f), label, null, s == screen, 9f) { onSelect(s) }
             Spacer(Modifier.width(u(6)))
@@ -211,7 +212,10 @@ private fun TopBar(modifier: Modifier, screen: Screen, status: ConnStatus, onSel
         Dot(dotColor, u(9))
         Spacer(Modifier.width(u(8)))
         Column(Modifier.width(u(150))) {
-            Text(stateText, color = C.Text, fontSize = t(9), maxLines = 1)
+            Row {
+                Text(stateText, color = C.Text, fontSize = t(9), maxLines = 1)
+                if (recording) Text("  ● REC", color = C.Red, fontSize = t(9), fontWeight = FontWeight.Bold, maxLines = 1)
+            }
             Text(status.detail, color = C.Dim, fontSize = t(7), maxLines = 1)
         }
         Column(horizontalAlignment = Alignment.End) {
