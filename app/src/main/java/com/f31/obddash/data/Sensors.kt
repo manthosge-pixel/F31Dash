@@ -166,6 +166,11 @@ class AppPrefs(ctx: Context) {
         get() = sp.getInt("dash_mode", 0)
         set(v) = sp.edit().putInt("dash_mode", v).apply()
 
+    /** Low byte of the dynamic DID (F3xx) the DME accepted last time; -1 = unknown. */
+    var dynLo: Int
+        get() = sp.getInt("dyn_lo", -1)
+        set(v) = sp.edit().putInt("dyn_lo", v).apply()
+
     var demo: Boolean
         get() = sp.getBoolean("demo", false)
         set(v) = sp.edit().putBoolean("demo", v).apply()

@@ -92,19 +92,22 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var lastIp: String? = null
     @Volatile private var lastVin: String? = null
     @Volatile private var reconnects = 0
+    @Volatile private var connDetail = ""
     /** Where OBD Mode 01 requests go: the DME itself (12) or the OBD functional address (DF). */
     @Volatile private var obdTarget: Int = HsfzClient.ECU_DME
 
     private fun detectObdTarget(c: HsfzClient): Int {
         // The DME answers Mode 01 directly; DF only as a last resort (other modules answer there too).
-        for (t in listOf(HsfzClient.ECU_DME, HsfzClient.ECU_DME, HsfzClient.ECU_DME, 0xDF)) {
-            val ok = try {
-                val r = c.request(t, byteArrayOf(0x01, 0x00), 2000)
-                (r[0].toInt() and 0xFF) == 0x41
-            } catch (e: SocketTimeoutException) { false }
-            if (ok) return t
+        repeat(3) {
+            val r = try { c.request(HsfzClient.ECU_DME, byteArrayOf(0x01, 0x00), 1500) } catch (e: SocketTimeoutException) { null }
+            if (r != null) {
+                if ((r[0].toInt() and 0xFF) == 0x41) return HsfzClient.ECU_DME
+                // the DME refused Mode 01 → try the OBD functional address
+                val f = try { c.request(0xDF, byteArrayOf(0x01, 0x00), 1500) } catch (e: SocketTimeoutException) { null }
+                return if (f != null && (f[0].toInt() and 0xFF) == 0x41) 0xDF else HsfzClient.ECU_DME
+            }
         }
-        return HsfzClient.ECU_DME
+        return HsfzClient.ECU_DME   // no answer at all: stay with the DME (it worked before)
     }
     private var job: Job? = null
 
@@ -226,7 +229,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 client = c
                 lastIp = ip; lastVin = vin
                 reconnects++
-                _status.value = ConnStatus(ConnState.CONNECTED, ip + (vin?.let { " · $it" } ?: ""))
+                connDetail = ip + (vin?.let { " · $it" } ?: "")
+                _status.value = ConnStatus(ConnState.CONNECTED, connDetail)
                 _unsupported.value = emptySet()
                 obdTarget = detectObdTarget(c)
                 pollLoop(c)
@@ -261,7 +265,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun defineDynamic(c: HsfzClient, srcs: List<DidSource>): Boolean {
         val tried = StringBuilder()
-        for (lo in listOf(0x03, 0x00, 0x01, 0x02, 0x04, 0x10, 0xFF)) {
+        val saved = prefs.dynLo
+        val candidates = (listOf(saved, 0x00, 0x03, 0x01, 0x02, 0x04, 0x10, 0xFF)).filter { it in 0..0xFF }.distinct()
+        for (lo in candidates) {
             val b = lo.toByte()
             try {
                 c.request(HsfzClient.ECU_DME, byteArrayOf(0x2C, 0x03, 0xF3.toByte(), b), 1000)
@@ -276,6 +282,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 tried.append(String.format("F3%02X→%s ", lo, r.toHex()))
                 if ((r[0].toInt() and 0xFF) == 0x6C) {
                     dynLo = b
+                    prefs.dynLo = lo
                     dynInfo = tried.toString()
                     return true
                 }
@@ -283,11 +290,12 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 if (r.size >= 3 && (r[2].toInt() and 0xFF) != 0x31) break
             } catch (e: Exception) {
                 tried.append(String.format("F3%02X→%s ", lo, e.javaClass.simpleName))
-                break
+                dynInfo = tried.toString()
+                return false            // no answer ≠ refused: try again on a later cycle
             }
         }
         dynInfo = tried.toString()
-        dynOk = false
+        dynOk = false                   // every number refused: read the DIDs one by one
         return false
     }
 
@@ -299,6 +307,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun pollLoop(c: HsfzClient) {
         var cycle = 0
         var gearPause = 0
+        var deadCycles = 0
+        var foreignLast = 0
+        var foreignT0 = System.currentTimeMillis()
         val fails = HashMap<SensorId, Int>()
         var cycles = 0
         var rateT0 = System.currentTimeMillis()
@@ -323,6 +334,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 fails[id] = n
                 if (n >= 3) _unsupported.update { it + id }
                 vals.remove(id); raws[id] = raw
+            }
+            fun lost(id: SensorId) {     // no answer this time: keep the last value, don't blame the sensor
+                raws[id] = "timeout"
             }
             fun ask(target: Int, req: ByteArray): ByteArray? {
                 asked++
@@ -380,6 +394,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                         if (v != null) good(id, v, "dyn " + resp.toHex()) else bad(id, resp.toHex())
                         off += src.bytes
                     }
+                } else if (resp == null && dynDefined != null) {
+                    didAll.forEach { (id, _) -> lost(id) }      // just a lost answer: keep the definition
                 } else {
                     if (resp != null) dynInfo = "read → " + resp.toHex()
                     dynDefined = null
@@ -396,13 +412,27 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 val resp = ask(target, src.requestBytes())
                 if (resp == null) {
                     if (id == SensorId.GEAR) gearPause = 10      // gearbox busy: leave it alone a moment
-                    bad(id, "timeout"); continue
+                    lost(id); continue
                 }
                 val v = src.decode(resp)
                 if (v != null) good(id, v, resp.toHex()) else bad(id, resp.toHex())
             }
 
-            if (asked > 0 && timeouts == asked) throw IOException("Car not responding")
+            if (asked > 0 && timeouts == asked) {
+                deadCycles++
+                if (deadCycles >= 8) throw IOException("Car not responding")
+            } else deadCycles = 0
+
+            // another tester on the same car steals our answers → tell the user
+            val foreign = c.foreignAnswers
+            if (System.currentTimeMillis() - foreignT0 >= 3000) {
+                val many = foreign - foreignLast > 6
+                val st = _status.value
+                if (st.state == ConnState.CONNECTED) {
+                    _status.value = st.copy(detail = if (many) "⚠ Another device/app is using the car (phone? BimmerLink?)" else connDetail)
+                }
+                foreignLast = foreign; foreignT0 = System.currentTimeMillis()
+            }
 
             if (raws.isNotEmpty()) _raw.update { it + raws }
             deriveBoost(vals)
@@ -583,7 +613,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.19 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.20 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
@@ -593,7 +623,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         sb.appendLine("OBD target: %02X".format(obdTarget))
         sb.appendLine("Updates/s: %.1f · avg request: %.0f ms · multi-PID: %s".format(_pollRate.value, client?.avgLatencyMs ?: 0.0, multiObdOk))
         sb.appendLine("Dynamic DID F3xx: ok=%s defined=%s · %s".format(dynOk, dynDefined != null, dynInfo))
-        sb.appendLine("Wi-Fi low-latency lock: %s · connections: %d".format(wifiLock?.isHeld == true, reconnects))
+        sb.appendLine("Wi-Fi low-latency lock: %s · connections: %d · foreign answers: %d".format(
+            wifiLock?.isHeld == true, reconnects, client?.foreignAnswers ?: 0))
         val tests = listOf(
             0x12 to "01 00",        // supported PIDs 01-20
             0x12 to "01 20",        // supported PIDs 21-40

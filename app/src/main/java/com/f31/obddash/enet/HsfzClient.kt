@@ -72,6 +72,10 @@ class HsfzClient(private val network: Network?) : Closeable {
     private val inbox = ArrayDeque<Pair<Int, ByteArray>>()
     private val sentAt = HashMap<Int, Long>()
 
+    /** Answers nobody here asked for — a sign that another tester (phone, BimmerLink…) is connected. */
+    @Volatile var foreignAnswers = 0
+        private set
+
     /** Sends one UDS request to [target] ECU and returns the UDS response (positive or 7F negative). */
     @Synchronized
     fun request(target: Int, uds: ByteArray, timeoutMs: Long = 1500): ByteArray {
@@ -141,6 +145,7 @@ class HsfzClient(private val network: Network?) : Closeable {
                 sentAt[target]?.let { t -> noteLatency(t) }
                 return resp
             }
+            foreignAnswers++
             inbox.addLast(src to resp)
             while (inbox.size > 16) inbox.removeFirst()
         }
