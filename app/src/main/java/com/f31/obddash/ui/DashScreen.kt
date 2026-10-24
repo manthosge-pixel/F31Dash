@@ -95,7 +95,7 @@ fun SportDash(
             values[SensorId.RPM], redlineRpm(values[SensorId.OIL_TEMP])
         )
         // ---------------- hero: RPM · car · boost · gear
-        Panel(Modifier.fillMaxWidth().weight(1.35f)) {
+        Panel(Modifier.fillMaxWidth().weight(1.2f)) {
             Row(Modifier.fillMaxSize().padding(horizontal = u(8), vertical = u(4)), verticalAlignment = Alignment.CenterVertically) {
                 val rpm = values[SensorId.RPM]
                 val rpmAnim by animateFloatAsState((rpm ?: 0.0).toFloat(), tween(120, easing = LinearEasing), label = "rpm")
@@ -147,15 +147,14 @@ fun SportDash(
                             .fillMaxWidth()
                             .weight(0.58f)
                             .drawBehind {
-                                // soft blue glow behind the car, no frame
-                                drawOval(
+                                // soft round glow behind the car — fades fully to transparent, no edge
+                                val r = minOf(size.width * 0.42f, size.height * 0.75f)
+                                drawRect(
                                     Brush.radialGradient(
-                                        listOf(C.Blue.copy(alpha = 0.22f), Color.Transparent),
-                                        center = Offset(size.width / 2f, size.height * 0.62f),
-                                        radius = size.width * 0.48f
-                                    ),
-                                    topLeft = Offset(size.width * 0.02f, size.height * 0.15f),
-                                    size = Size(size.width * 0.96f, size.height * 0.95f)
+                                        listOf(C.Blue.copy(alpha = 0.16f), C.Blue.copy(alpha = 0.05f), Color.Transparent),
+                                        center = Offset(size.width / 2f, size.height * 0.6f),
+                                        radius = r
+                                    )
                                 )
                             }
                     )
@@ -201,12 +200,12 @@ fun SportDash(
         }
 
         // ---------------- tiles
-        Row(Modifier.fillMaxWidth().weight(0.74f), horizontalArrangement = Arrangement.spacedBy(u(6))) {
+        Row(Modifier.fillMaxWidth().weight(0.8f), horizontalArrangement = Arrangement.spacedBy(u(6))) {
             TILE_ROW_1.forEach { (id, icon) ->
                 SensorTile(Modifier.weight(1f).fillMaxHeight(), SENSOR_MAP.getValue(id), values[id], icon, na(id), alarm = id in alarmIds)
             }
         }
-        Row(Modifier.fillMaxWidth().weight(0.74f), horizontalArrangement = Arrangement.spacedBy(u(6))) {
+        Row(Modifier.fillMaxWidth().weight(0.8f), horizontalArrangement = Arrangement.spacedBy(u(6))) {
             TILE_ROW_2.forEach { (id, icon) ->
                 SensorTile(
                     Modifier.weight(1f).fillMaxHeight(), SENSOR_MAP.getValue(id), values[id], icon, na(id),

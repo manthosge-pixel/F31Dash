@@ -6,6 +6,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -199,36 +202,48 @@ fun SensorTile(
         ((def.warnAbove != null && value > def.warnAbove) || (def.warnBelow != null && value < def.warnBelow)))
     Panel(modifier) {
         if (alarm) Box(Modifier.fillMaxSize().background(C.Red.copy(alpha = blinkAlpha())))
-        Column(Modifier.fillMaxSize().padding(horizontal = u(10), vertical = u(6))) {
-            Row(Modifier.fillMaxWidth().weight(1f)) {
-                Icon(icon, null, tint = if (warn) C.Red else C.Text, modifier = Modifier.size(u(26)))
-                Spacer(Modifier.weight(1f))
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(def.label, color = C.Text, fontSize = t(9), maxLines = 1)
-                    Row(verticalAlignment = Alignment.Bottom) {
-                        Text(
-                            if (unavailable) "N/A" else def.formatValue(value),
-                            color = if (warn) C.Red else C.Text,
-                            fontSize = t(18), fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false
-                        )
-                        Spacer(Modifier.width(u(4)))
-                        Text(def.unit, color = C.Dim, fontSize = t(8), modifier = Modifier.padding(bottom = u(3)))
+        // Sizes follow the real tile height, so wide-and-low screens (1920×720) don't clip the value.
+        BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = u(10), vertical = u(5))) {
+            val density = LocalDensity.current
+            val scale = LocalUiScale.current
+            val showScale = showBar && maxHeight >= (62 * scale).dp
+            val reserved = ((4 + 3) * scale).dp + if (showScale) (11 * scale).dp else 0.dp
+            val top = (maxHeight - reserved).coerceAtLeast(16.dp)
+            val labelSp = with(density) { (top * 0.22f).coerceIn(8.dp, (11 * scale).dp).toSp() }
+            val valueSp = with(density) { (top * 0.52f).coerceIn(10.dp, (24 * scale).dp).toSp() }
+            val unitSp = with(density) { (top * 0.2f).coerceIn(7.dp, (10 * scale).dp).toSp() }
+            val iconDp = (top * 0.62f).coerceIn(14.dp, (28 * scale).dp)
+
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(icon, null, tint = if (warn) C.Red else C.Text, modifier = Modifier.size(iconDp))
+                    Spacer(Modifier.weight(1f))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(def.label, color = C.Dim, fontSize = labelSp, maxLines = 1, lineHeight = labelSp)
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                if (unavailable) "N/A" else def.formatValue(value),
+                                color = if (warn) C.Red else C.Text,
+                                fontSize = valueSp, lineHeight = valueSp,
+                                fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false
+                            )
+                            Spacer(Modifier.width(u(4)))
+                            Text(def.unit, color = C.Dim, fontSize = unitSp, maxLines = 1,
+                                modifier = Modifier.padding(bottom = u(2)))
+                        }
                     }
                 }
-            }
-            if (showBar) {
-                val frac = value?.let { ((it - def.min) / (def.max - def.min)).toFloat().coerceIn(0f, 1f) }
-                SegmentBar(Modifier.fillMaxWidth().height(u(4)), frac, if (warn) C.Red else C.Blue)
-                Spacer(Modifier.height(u(3)))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(def.min.fmtScale(), color = C.Dim, fontSize = t(7))
-                    Text(def.midLabel, color = C.Dim, fontSize = t(7))
-                    Text(def.max.fmtScale(), color = C.Dim, fontSize = t(7))
+                val frac = if (showBar) value?.let { ((it - def.min) / (def.max - def.min)).toFloat().coerceIn(0f, 1f) } else null
+                Spacer(Modifier.height((3 * scale).dp))
+                SegmentBar(Modifier.fillMaxWidth().height((4 * scale).dp), frac, if (warn) C.Red else C.Blue)
+                if (showScale) {
+                    Row(Modifier.fillMaxWidth().height((11 * scale).dp), horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Bottom) {
+                        Text(def.min.fmtScale(), color = C.Dim, fontSize = t(7), lineHeight = t(7))
+                        Text(def.midLabel, color = C.Dim, fontSize = t(7), lineHeight = t(7))
+                        Text(def.max.fmtScale(), color = C.Dim, fontSize = t(7), lineHeight = t(7))
+                    }
                 }
-            } else {
-                SegmentBar(Modifier.fillMaxWidth().height(u(4)), null, C.Blue)
-                Spacer(Modifier.height(u(3)))
-                Text(" ", fontSize = t(7))
             }
         }
     }

@@ -100,16 +100,16 @@ fun DailyDash(values: Map<SensorId, Double>, alarms: List<Alarm>, onAlarmTap: ()
                         .weight(1f)
                         .padding(top = u(4))
                         .drawBehind {
-                            drawOval(
-                                Brush.radialGradient(
-                                    listOf(C.Blue.copy(alpha = 0.18f), Color.Transparent),
-                                    center = Offset(size.width / 2f, size.height * 0.62f),
-                                    radius = size.width * 0.45f
-                                ),
-                                topLeft = Offset(size.width * 0.05f, size.height * 0.15f),
-                                size = Size(size.width * 0.9f, size.height * 0.95f)
-                            )
-                        }
+                                // soft round glow behind the car — fades fully to transparent, no edge
+                                val r = minOf(size.width * 0.42f, size.height * 0.75f)
+                                drawRect(
+                                    Brush.radialGradient(
+                                        listOf(C.Blue.copy(alpha = 0.16f), C.Blue.copy(alpha = 0.05f), Color.Transparent),
+                                        center = Offset(size.width / 2f, size.height * 0.6f),
+                                        radius = r
+                                    )
+                                )
+                            }
                 )
             }
         }
