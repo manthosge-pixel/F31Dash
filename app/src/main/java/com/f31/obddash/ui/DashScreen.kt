@@ -26,7 +26,11 @@ import androidx.compose.material.icons.outlined.Thermostat
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Text
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -66,9 +70,10 @@ fun DashScreen(values: Map<SensorId, Double>, unsupported: Set<SensorId>, config
         Panel(Modifier.fillMaxWidth().weight(1.35f)) {
             Row(Modifier.fillMaxSize().padding(horizontal = u(8), vertical = u(4)), verticalAlignment = Alignment.CenterVertically) {
                 val rpm = values[SensorId.RPM]
+                val rpmAnim by animateFloatAsState((rpm ?: 0.0).toFloat(), tween(120, easing = LinearEasing), label = "rpm")
                 ArcGauge(
                     Modifier.weight(1.25f).fillMaxHeight(),
-                    value = rpm?.div(1000.0),
+                    value = if (rpm == null) null else rpmAnim / 1000.0,
                     min = 0.0, max = 7.0, redFrom = 5.0,
                     ticks = (0..7).map { it.toDouble() },
                     tickLabel = { it.toInt().toString() },
@@ -88,9 +93,10 @@ fun DashScreen(values: Map<SensorId, Double>, unsupported: Set<SensorId>, config
                     )
                 }
                 val boost = values[SensorId.BOOST]
+                val boostAnim by animateFloatAsState((boost ?: 0.0).toFloat(), tween(120, easing = LinearEasing), label = "boost")
                 ArcGauge(
                     Modifier.weight(1f).fillMaxHeight(),
-                    value = boost,
+                    value = if (boost == null) null else boostAnim.toDouble(),
                     min = -1.0, max = 2.0, redFrom = 1.0,
                     ticks = listOf(-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0),
                     tickLabel = { String.format(Locale.US, "%.1f", it) },

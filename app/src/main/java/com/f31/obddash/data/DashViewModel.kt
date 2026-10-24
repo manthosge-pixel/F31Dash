@@ -183,62 +183,149 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    @Volatile private var multiObdOk = true
+    @Volatile private var multiDidOk = true
+
+    /**
+     * One cycle = few requests: all fast OBD PIDs in one Mode 01 request (up to 6 PIDs),
+     * the BMW DIDs of the DME in one 22 request, the gear every 3rd cycle,
+     * slow values (temperatures, battery…) only every 6th cycle.
+     */
     private suspend fun pollLoop(c: HsfzClient) {
         var cycle = 0
         val fails = HashMap<SensorId, Int>()
-        var reqCount = 0
+        var cycles = 0
         var rateT0 = System.currentTimeMillis()
+        multiObdOk = true
+        multiDidOk = true
 
         while (currentCoroutineContext().isActive) {
             val cfg = _sources.value
+            val unsup = _unsupported.value
             val vals = HashMap(_values.value)
+            val raws = HashMap<SensorId, String>()
             var asked = 0
             var timeouts = 0
 
-            for (def in SENSORS) {
-                if (def.derived) continue
-                if (!def.fast && cycle % 8 != 0) continue
-                if (def.id == SensorId.GEAR && cycle % 3 != 0) continue   // be gentle with the EGS
-                if (def.id in _unsupported.value) continue
-                val src = cfg[def.id] ?: continue
-
+            fun good(id: SensorId, v: Double, raw: String) {
+                fails[id] = 0; vals[id] = v; raws[id] = raw
+            }
+            fun bad(id: SensorId, raw: String) {
+                val n = (fails[id] ?: 0) + 1
+                fails[id] = n
+                if (n >= 3) _unsupported.update { it + id }
+                vals.remove(id); raws[id] = raw
+            }
+            fun ask(target: Int, req: ByteArray): ByteArray? {
                 asked++
-                val resp = try {
-                    val target = if (src.obd && src.ecu == HsfzClient.ECU_DME) obdTarget else src.ecu
-                    c.request(target, src.requestBytes())
+                return try {
+                    c.request(target, req, 700)
                 } catch (e: SocketTimeoutException) {
-                    timeouts++
-                    _raw.update { it + (def.id to "timeout") }
-                    continue
+                    timeouts++; null
                 }
-                reqCount++
-                _raw.update { it + (def.id to resp.toHex()) }
+            }
 
-                val v = src.decode(resp)
-                if (v == null) {
-                    val n = (fails[def.id] ?: 0) + 1
-                    fails[def.id] = n
-                    if (n >= 3) _unsupported.update { it + def.id }
-                    vals.remove(def.id)
-                } else {
-                    fails[def.id] = 0
-                    vals[def.id] = v
+            val due: List<Pair<SensorId, DidSource>> = SENSORS.filter { d ->
+                !d.derived && d.id !in unsup && cfg[d.id] != null && when {
+                    d.id == SensorId.GEAR -> cycle % 3 == 0
+                    d.id == SensorId.TRANS_TEMP -> cycle % 20 == 5
+                    d.fast -> true
+                    else -> cycle % 6 == 2
                 }
+            }.map { it.id to cfg.getValue(it.id) }
+
+            val singles = ArrayList<Pair<SensorId, DidSource>>()
+
+            // ---- 1. OBD Mode 01, several PIDs per request
+            val obdItems = due.filter { (_, s) -> s.obd && s.ecu == HsfzClient.ECU_DME && OBD_PID_LEN.containsKey(s.did) }
+            if (multiObdOk && obdItems.size > 1) {
+                for (chunk in obdItems.chunked(6)) {
+                    val req = byteArrayOf(0x01) + ByteArray(chunk.size) { chunk[it].second.did.toByte() }
+                    val resp = ask(obdTarget, req) ?: continue
+                    val starts = splitObd(resp)
+                    if (starts == null) { multiObdOk = false; singles += chunk; continue }
+                    for ((id, src) in chunk) {
+                        val st = starts[src.did]
+                        val v = st?.let { src.decodeData(resp, it) }
+                        if (v != null) good(id, v, "multi " + resp.toHex()) else bad(id, "no answer in " + resp.toHex())
+                    }
+                }
+            } else singles += obdItems
+
+            // ---- 2. BMW DIDs of the DME, several per request
+            val didItems = due.filter { (_, s) -> !s.obd && s.ecu == HsfzClient.ECU_DME }
+            if (multiDidOk && didItems.size > 1) {
+                for (chunk in didItems.chunked(4)) {
+                    val req = ByteArray(1 + chunk.size * 2)
+                    req[0] = 0x22
+                    chunk.forEachIndexed { i, (_, s) ->
+                        req[1 + i * 2] = (s.did shr 8).toByte(); req[2 + i * 2] = s.did.toByte()
+                    }
+                    val resp = ask(HsfzClient.ECU_DME, req) ?: continue
+                    val starts = splitDids(resp, chunk.map { it.second })
+                    if (starts == null) { multiDidOk = false; singles += chunk; continue }
+                    chunk.forEachIndexed { i, (id, src) ->
+                        val v = src.decodeData(resp, starts[i])
+                        if (v != null) good(id, v, "multi " + resp.toHex()) else bad(id, resp.toHex())
+                    }
+                }
+            } else singles += didItems
+
+            // ---- 3. everything else, one by one
+            singles += due.filter { (_, s) -> !(s.obd && s.ecu == HsfzClient.ECU_DME && OBD_PID_LEN.containsKey(s.did)) && !(!s.obd && s.ecu == HsfzClient.ECU_DME) }
+            for ((id, src) in singles) {
+                val target = if (src.obd && src.ecu == HsfzClient.ECU_DME) obdTarget else src.ecu
+                val resp = ask(target, src.requestBytes())
+                if (resp == null) { bad(id, "timeout"); continue }
+                val v = src.decode(resp)
+                if (v != null) good(id, v, resp.toHex()) else bad(id, resp.toHex())
             }
 
             if (asked > 0 && timeouts == asked) throw IOException("Car not responding")
 
+            if (raws.isNotEmpty()) _raw.update { it + raws }
             deriveBoost(vals)
             publish(vals)
             cycle++
+            cycles++
 
             val now = System.currentTimeMillis()
             if (now - rateT0 >= 2000) {
-                _pollRate.value = reqCount * 1000.0 / (now - rateT0)
-                reqCount = 0; rateT0 = now
+                _pollRate.value = cycles * 1000.0 / (now - rateT0)
+                cycles = 0; rateT0 = now
             }
             if (asked == 0) delay(200)
         }
+    }
+
+    /** Splits "41 PID data PID data…" → PID to data start index; null if it can't be split. */
+    private fun splitObd(resp: ByteArray): Map<Int, Int>? {
+        if (resp.isEmpty() || (resp[0].toInt() and 0xFF) != 0x41) return null
+        val out = HashMap<Int, Int>()
+        var i = 1
+        while (i < resp.size) {
+            val pid = resp[i].toInt() and 0xFF
+            val len = OBD_PID_LEN[pid] ?: return null
+            if (i + 1 + len > resp.size) return null
+            out[pid] = i + 1
+            i += 1 + len
+        }
+        return out
+    }
+
+    /** Checks "62 DID data DID data…" in request order; returns data start of each, or null. */
+    private fun splitDids(resp: ByteArray, srcs: List<DidSource>): List<Int>? {
+        if (resp.isEmpty() || (resp[0].toInt() and 0xFF) != 0x62) return null
+        val out = ArrayList<Int>()
+        var i = 1
+        for (s in srcs) {
+            if (i + 2 > resp.size) return null
+            val did = ((resp[i].toInt() and 0xFF) shl 8) or (resp[i + 1].toInt() and 0xFF)
+            if (did != s.did) return null
+            out += i + 2
+            i += 2 + s.pos + s.bytes
+        }
+        return if (i == resp.size) out else null
     }
 
     private fun deriveBoost(vals: HashMap<SensorId, Double>) {
@@ -321,7 +408,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.6 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.7 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
@@ -329,6 +416,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             return@withContext sb.toString()
         }
         sb.appendLine("OBD target: %02X".format(obdTarget))
+        sb.appendLine("Updates/s: %.1f · multi-PID: %s · multi-DID: %s".format(_pollRate.value, multiObdOk, multiDidOk))
         val tests = listOf(
             0x12 to "01 00",        // supported PIDs 01-20
             0x12 to "01 20",        // supported PIDs 21-40

@@ -275,7 +275,7 @@ fun SettingsScreen(vm: DashViewModel) {
                 Text("CONNECTION", color = C.Dim, fontSize = t(10))
                 Text("${status.state}  ·  ${status.detail}", color = C.Text, fontSize = t(12))
                 if (status.state == ConnState.CONNECTED) {
-                    Text(String.format(Locale.US, "%.1f requests/s", rate), color = C.Dim, fontSize = t(10))
+                    Text(String.format(Locale.US, "%.1f updates/s", rate), color = C.Dim, fontSize = t(10))
                 }
                 OutlinedTextField(
                     value = ip, onValueChange = { ip = it },

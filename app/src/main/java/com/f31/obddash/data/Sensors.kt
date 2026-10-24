@@ -33,15 +33,21 @@ data class DidSource(
         else byteArrayOf(0x22, (did shr 8).toByte(), did.toByte())
 
     fun decode(resp: ByteArray): Double? {
-        val start = (if (obd) 2 else 3) + pos
-        if (resp.size < start + bytes) return null
+        if (resp.size < 2) return null
         if (obd) {
             if ((resp[0].toInt() and 0xFF) != 0x41 || (resp[1].toInt() and 0xFF) != did) return null
         } else {
             if ((resp[0].toInt() and 0xFF) != 0x62) return null
         }
+        return decodeData(resp, if (obd) 2 else 3)
+    }
+
+    /** Decodes this value from [buf], where this PID's / DID's data begins at [dataStart]. */
+    fun decodeData(buf: ByteArray, dataStart: Int): Double? {
+        val start = dataStart + pos
+        if (start < 0 || buf.size < start + bytes) return null
         var raw = 0L
-        for (i in 0 until bytes) raw = (raw shl 8) or (resp[start + i].toLong() and 0xFF)
+        for (i in 0 until bytes) raw = (raw shl 8) or (buf[start + i].toLong() and 0xFF)
         if (signed) {
             val bits = bytes * 8
             if (raw and (1L shl (bits - 1)) != 0L) raw -= (1L shl bits)
@@ -73,6 +79,13 @@ data class DidSource(
         }
     }
 }
+
+/** Data length of standard OBD Mode 01 PIDs (needed to split multi-PID answers). */
+val OBD_PID_LEN: Map<Int, Int> = mapOf(
+    0x04 to 1, 0x05 to 1, 0x06 to 1, 0x07 to 1, 0x0B to 1, 0x0C to 2, 0x0D to 1, 0x0E to 1,
+    0x0F to 1, 0x10 to 2, 0x11 to 1, 0x1F to 2, 0x24 to 4, 0x33 to 1, 0x34 to 4, 0x3C to 2,
+    0x42 to 2, 0x44 to 2, 0x46 to 1, 0x5C to 1,
+)
 
 private fun Double.clean(): String =
     if (this == Math.floor(this) && kotlin.math.abs(this) < 1e12) toLong().toString() else toString()
