@@ -14,7 +14,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -332,6 +337,25 @@ fun SensorsScreen(vm: DashViewModel) {
     var testEcu by remember { mutableStateOf("12") }
     var testUds by remember { mutableStateOf("22 F4 0C") }
     var testResult by remember { mutableStateOf("") }
+    var diag by remember { mutableStateOf<String?>(null) }
+    val clipboard = LocalClipboardManager.current
+
+    diag?.let { report ->
+        AlertDialog(
+            onDismissRequest = { diag = null },
+            title = { Text("Diagnostic") },
+            text = {
+                SelectionContainer {
+                    Text(
+                        report, fontFamily = FontFamily.Monospace, fontSize = t(10),
+                        modifier = Modifier.verticalScroll(rememberScrollState())
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { clipboard.setText(AnnotatedString(report)) }) { Text("COPY") } },
+            dismissButton = { TextButton(onClick = { diag = null }) { Text("CLOSE") } }
+        )
+    }
 
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(u(6))) {
         Panel(Modifier.fillMaxWidth()) {
@@ -356,6 +380,13 @@ fun SensorsScreen(vm: DashViewModel) {
                 ) { Text("SEND") }
                 Text(testResult, color = C.Text, fontSize = t(11), fontFamily = FontFamily.Monospace,
                     modifier = Modifier.weight(1f), maxLines = 2)
+                Button(
+                    onClick = {
+                        diag = "Running…"
+                        scope.launch { diag = vm.runDiagnostic() }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = C.Amber)
+                ) { Text("DIAGNOSTIC", color = C.Bg) }
             }
         }
         Panel(Modifier.fillMaxWidth().weight(1f)) {

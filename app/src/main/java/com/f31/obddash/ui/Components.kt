@@ -182,7 +182,7 @@ fun SensorTile(
     val warn = value != null &&
         ((def.warnAbove != null && value > def.warnAbove) || (def.warnBelow != null && value < def.warnBelow))
     Panel(modifier) {
-        Column(Modifier.fillMaxSize().padding(horizontal = u(10), vertical = u(7))) {
+        Column(Modifier.fillMaxSize().padding(horizontal = u(10), vertical = u(6))) {
             Row(Modifier.fillMaxWidth().weight(1f)) {
                 Icon(icon, null, tint = if (warn) C.Red else C.Text, modifier = Modifier.size(u(26)))
                 Spacer(Modifier.weight(1f))
@@ -192,7 +192,7 @@ fun SensorTile(
                         Text(
                             if (unavailable) "N/A" else def.formatValue(value),
                             color = if (warn) C.Red else C.Text,
-                            fontSize = t(19), fontWeight = FontWeight.Bold, maxLines = 1
+                            fontSize = t(18), fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false
                         )
                         Spacer(Modifier.width(u(4)))
                         Text(def.unit, color = C.Dim, fontSize = t(8), modifier = Modifier.padding(bottom = u(3)))

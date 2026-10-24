@@ -12,11 +12,23 @@ android {
         applicationId = "com.f31.obddash"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 2
+        versionName = "0.2"
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("f31dash.keystore")
+            storePassword = "f31dash"
+            keyAlias = "f31dash"
+            keyPassword = "f31dash"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
         }

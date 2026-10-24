@@ -63,7 +63,7 @@ fun DashScreen(values: Map<SensorId, Double>, unsupported: Set<SensorId>, config
 
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(u(6))) {
         // ---------------- hero: RPM · car · boost · gear
-        Panel(Modifier.fillMaxWidth().weight(1.45f)) {
+        Panel(Modifier.fillMaxWidth().weight(1.35f)) {
             Row(Modifier.fillMaxSize().padding(horizontal = u(8), vertical = u(4)), verticalAlignment = Alignment.CenterVertically) {
                 val rpm = values[SensorId.RPM]
                 ArcGauge(
@@ -104,12 +104,12 @@ fun DashScreen(values: Map<SensorId, Double>, unsupported: Set<SensorId>, config
         }
 
         // ---------------- tiles
-        Row(Modifier.fillMaxWidth().weight(0.78f), horizontalArrangement = Arrangement.spacedBy(u(6))) {
+        Row(Modifier.fillMaxWidth().weight(0.74f), horizontalArrangement = Arrangement.spacedBy(u(6))) {
             TILE_ROW_1.forEach { (id, icon) ->
                 SensorTile(Modifier.weight(1f).fillMaxHeight(), SENSOR_MAP.getValue(id), values[id], icon, na(id))
             }
         }
-        Row(Modifier.fillMaxWidth().weight(0.66f), horizontalArrangement = Arrangement.spacedBy(u(6))) {
+        Row(Modifier.fillMaxWidth().weight(0.74f), horizontalArrangement = Arrangement.spacedBy(u(6))) {
             TILE_ROW_2.forEach { (id, icon) ->
                 SensorTile(
                     Modifier.weight(1f).fillMaxHeight(), SENSOR_MAP.getValue(id), values[id], icon, na(id),
@@ -133,8 +133,8 @@ private fun GearBox(modifier: Modifier, gear: Double?, unavailable: Boolean) {
                 SENSOR_MAP.getValue(SensorId.GEAR).formatValue(gear),
                 color = C.Text, fontSize = t(28), fontWeight = FontWeight.Bold
             )
-            Box(Modifier.height(u(10))) {
-                if (gear == null) Text(if (unavailable) "UNAVAILABLE" else "", color = C.Dim, fontSize = t(6))
+            Box(Modifier.height(u(14))) {
+                if (gear == null) Text(if (unavailable) "UNAVAILABLE" else "", color = C.Dim, fontSize = t(7), maxLines = 1)
             }
         }
     }

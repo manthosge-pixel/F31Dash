@@ -191,6 +191,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                     c.request(src.ecu, byteArrayOf(0x22, (src.did shr 8).toByte(), src.did.toByte()))
                 } catch (e: SocketTimeoutException) {
                     timeouts++
+                    _raw.update { it + (def.id to "timeout") }
                     continue
                 }
                 reqCount++
@@ -297,6 +298,42 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             val ecu = ecuHex.trim().toInt(16)
             c.request(ecu, udsHex.hexToBytes(), 3000).toHex()
         }
+    }
+
+    /** Sends a fixed set of requests and returns a readable report (for screenshots). */
+    suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
+        val sb = StringBuilder()
+        val st = _status.value
+        sb.appendLine("App 0.2 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
+        val c = client
+        if (c == null || !c.isConnected) {
+            sb.appendLine("No TCP connection to the car.")
+            return@withContext sb.toString()
+        }
+        val tests = listOf(
+            0x12 to "3E 00",        // tester present
+            0x12 to "22 F1 90",     // VIN
+            0x12 to "22 F4 0C",     // RPM (OBD DID)
+            0x12 to "22 F4 05",     // coolant (OBD DID)
+            0x12 to "22 F4 00",     // supported PIDs 01-20
+            0x12 to "22 F1 8C",     // ECU serial
+            0x10 to "22 F1 90",     // gateway VIN
+            0x40 to "22 F1 90",     // FEM/BDC VIN
+            0x18 to "22 F1 90",     // gearbox VIN
+        )
+        for ((ecu, req) in tests) {
+            val line = try {
+                c.request(ecu, req.hexToBytes(), 2500).toHex()
+            } catch (e: Exception) {
+                "ERR ${e.javaClass.simpleName}: ${e.message}"
+            }
+            sb.appendLine(String.format("%02X  %-9s → %s", ecu, req, line))
+        }
+        sb.appendLine("--- last sensor answers ---")
+        _raw.value.forEach { (id, r) -> sb.appendLine("$id: $r") }
+        _unsupported.value = emptySet()
+        sb.toString()
     }
 
     // ---------------------------------------------------------------- demo
