@@ -25,13 +25,15 @@ data class DidSource(
     val offset: Double,
     val signed: Boolean = false,
     val obd: Boolean = false,
+    /** Byte position inside the answer data (DID "DA2E@1" = second byte). */
+    val pos: Int = 0,
 ) {
     fun requestBytes(): ByteArray =
         if (obd) byteArrayOf(0x01, did.toByte())
         else byteArrayOf(0x22, (did shr 8).toByte(), did.toByte())
 
     fun decode(resp: ByteArray): Double? {
-        val start = if (obd) 2 else 3
+        val start = (if (obd) 2 else 3) + pos
         if (resp.size < start + bytes) return null
         if (obd) {
             if ((resp[0].toInt() and 0xFF) != 0x41 || (resp[1].toInt() and 0xFF) != did) return null
@@ -48,7 +50,8 @@ data class DidSource(
     }
 
     fun format(): String = buildString {
-        val d = if (obd) String.format(Locale.US, "P%02X", did) else String.format(Locale.US, "%04X", did)
+        val d = (if (obd) String.format(Locale.US, "P%02X", did) else String.format(Locale.US, "%04X", did)) +
+            (if (pos > 0) "@$pos" else "")
         append(String.format(Locale.US, "%02X %s %d %s %s", ecu, d, bytes, factor.clean(), offset.clean()))
         if (signed) append(" s")
     }
@@ -58,13 +61,15 @@ data class DidSource(
             val p = s.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
             if (p.size < 5) return null
             return runCatching {
-                val obd = p[1].startsWith("P", ignoreCase = true)
-                val did = (if (obd) p[1].substring(1) else p[1]).toInt(16)
+                val didPart = p[1].substringBefore("@")
+                val pos = p[1].substringAfter("@", "0").toInt()
+                val obd = didPart.startsWith("P", ignoreCase = true)
+                val did = (if (obd) didPart.substring(1) else didPart).toInt(16)
                 DidSource(
                     p[0].toInt(16), did, p[2].toInt(),
-                    p[3].toDouble(), p[4].toDouble(), p.getOrNull(5) == "s", obd
+                    p[3].toDouble(), p[4].toDouble(), p.getOrNull(5) == "s", obd, pos
                 )
-            }.getOrNull()?.takeIf { it.bytes in 1..4 && (!it.obd || it.did in 0..0xFF) }
+            }.getOrNull()?.takeIf { it.bytes in 1..4 && it.pos in 0..64 && (!it.obd || it.did in 0..0xFF) }
         }
     }
 }
@@ -88,6 +93,7 @@ data class SensorDef(
 )
 
 private const val DME = 0x12
+private const val EGS = 0x18
 
 private fun obd(pid: Int, bytes: Int, factor: Double, offset: Double) =
     DidSource(DME, pid, bytes, factor, offset, obd = true)
@@ -95,12 +101,13 @@ private fun obd(pid: Int, bytes: Int, factor: Double, offset: Double) =
 /**
  * Defaults: standard OBD Mode 01 PIDs (the DME rejects the UDS F4xx form: 7F 22 31).
  * Oil pressure uses BMW DID 586F (absolute mbar, verified on an N55 MEVD17.2; -1 bar ≈ gauge).
- * Gear and gearbox temp have no known DID yet — set them in SENSORS when found.
+ * Gear: EGS (18) DID DA2E byte 1 = engaged gear 1..8 (verified on an F10 ZF 8HP); 0xFF at standstill.
+ * Gearbox temp: EGS DID DA12, 1 byte — scale not confirmed (raw − 40 is a guess).
  */
 val SENSORS: List<SensorDef> = listOf(
     SensorDef(SensorId.RPM, "RPM", "rpm", 0.0, 7000.0, "3500", 0, true, obd(0x0C, 2, 0.25, 0.0), warnAbove = 5000.0),
     SensorDef(SensorId.BOOST, "BOOST", "bar", -1.0, 2.0, "0.5", 2, true, null, derived = true, warnAbove = 1.0),
-    SensorDef(SensorId.GEAR, "GEAR", "", 0.0, 8.0, "", 0, true, null),
+    SensorDef(SensorId.GEAR, "GEAR", "", 0.0, 8.0, "", 0, true, DidSource(EGS, 0xDA2E, 1, 1.0, 0.0, pos = 1)),
     SensorDef(SensorId.WATER_TEMP, "WATER TEMP", "°C", 50.0, 130.0, "90", 0, false, obd(0x05, 1, 1.0, -40.0), warnAbove = 112.0),
     SensorDef(SensorId.OIL_TEMP, "OIL TEMP", "°C", 50.0, 150.0, "100", 0, false, DidSource(DME, 0x4402, 2, 0.75, -48.0), warnAbove = 130.0),
     SensorDef(SensorId.INTAKE_TEMP, "INTAKE AIR TEMP", "°C", -20.0, 80.0, "20", 0, false, obd(0x0F, 1, 1.0, -40.0), warnAbove = 60.0),
@@ -112,7 +119,7 @@ val SENSORS: List<SensorDef> = listOf(
     SensorDef(SensorId.FUEL_TRIM, "FUEL TRIM ST", "%", -25.0, 25.0, "0", 1, true, obd(0x06, 1, 100.0 / 128.0, -100.0)),
     SensorDef(SensorId.AFR, "AIR-FUEL RATIO", ":1", 10.0, 18.0, "14", 1, true, obd(0x24, 2, 14.7 * 2.0 / 65536.0, 0.0)),
     SensorDef(SensorId.OIL_PRESSURE, "OIL PRESSURE", "bar", 0.0, 7.0, "4", 1, true, DidSource(DME, 0x586F, 2, 0.001, -1.0), warnBelow = 1.0),
-    SensorDef(SensorId.TRANS_TEMP, "TRANSMISSION TEMP", "°C", 40.0, 140.0, "90", 0, false, null, warnAbove = 120.0),
+    SensorDef(SensorId.TRANS_TEMP, "TRANSMISSION TEMP", "°C", 40.0, 140.0, "90", 0, false, DidSource(EGS, 0xDA12, 1, 1.0, -40.0), warnAbove = 120.0),
     SensorDef(SensorId.RUN_TIME, "ENGINE RUN TIME", "h:min:s", 0.0, 0.0, "", 0, false, obd(0x1F, 2, 1.0, 0.0)),
 )
 
@@ -125,7 +132,7 @@ fun SensorDef.formatValue(v: Double?): String {
             val s = v.toLong()
             String.format(Locale.US, "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60)
         }
-        SensorId.GEAR -> if (v.toInt() == 0) "N" else v.toInt().toString()
+        SensorId.GEAR -> if (v.toInt() in 1..8) v.toInt().toString() else "–"
         else -> String.format(Locale.US, "%.${decimals}f", v)
     }
 }

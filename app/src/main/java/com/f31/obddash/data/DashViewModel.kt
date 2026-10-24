@@ -198,6 +198,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             for (def in SENSORS) {
                 if (def.derived) continue
                 if (!def.fast && cycle % 8 != 0) continue
+                if (def.id == SensorId.GEAR && cycle % 3 != 0) continue   // be gentle with the EGS
                 if (def.id in _unsupported.value) continue
                 val src = cfg[def.id] ?: continue
 
@@ -320,7 +321,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.4 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.5 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
@@ -341,7 +342,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             0x12 to "22 42 05",     // BMW charge pressure
             0x12 to "22 42 01",     // BMW ambient pressure
             0x12 to "22 58 6F",     // BMW oil pressure
-            0x18 to "22 F1 90",     // gearbox reachable
+            0x18 to "22 DA 2E",     // EGS engaged gear (byte 1)
+            0x18 to "22 DA 12",     // EGS ATF temperature (raw)
         )
         for ((ecu, req) in tests) {
             val line = try {
