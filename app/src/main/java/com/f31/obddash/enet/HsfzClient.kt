@@ -16,6 +16,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
+import com.f31.obddash.data.OBD_PID_LEN
 
 /**
  * BMW ENET diagnostics (HSFZ protocol) over the Wi-Fi ENET adapter.
@@ -112,6 +113,20 @@ class HsfzClient(private val network: Network?) : Closeable {
         if (rsid != sid + 0x40) return false
         // OBD Mode 01: PID must match; ReadDataByIdentifier: DID must match (skip late answers)
         if (sid == 0x01 && uds.size >= 2 && (resp.size < 2 || resp[1] != uds[1])) return false
+        // several PIDs in one request: the answer must contain exactly those PIDs
+        // (two requests may start with the same PID, so the first one alone proves nothing)
+        if (sid == 0x01 && uds.size > 2) {
+            val want = (1 until uds.size).map { uds[it].toInt() and 0xFF }.toSet()
+            val got = HashSet<Int>()
+            var i = 1
+            while (i < resp.size) {
+                val pid = resp[i].toInt() and 0xFF
+                val len = OBD_PID_LEN[pid] ?: return got.isEmpty() || got.all { it in want }
+                got += pid
+                i += 1 + len
+            }
+            if (got.any { it !in want }) return false
+        }
         if (sid == 0x22 && uds.size >= 3 && (resp.size < 3 || resp[1] != uds[1] || resp[2] != uds[2])) return false
         return true
     }
