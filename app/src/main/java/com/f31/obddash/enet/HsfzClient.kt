@@ -33,6 +33,9 @@ class HsfzClient(private val network: Network?) : Closeable {
         const val TESTER = 0xF4
         const val CTRL_DIAG = 0x0001
         const val CTRL_VEHICLE_IDENT = 0x0011
+        const val CTRL_ALIVE_REQ = 0x0040      // gateway: "are you still there?"
+        const val CTRL_ALIVE_RESP = 0x0041     // we must answer, or the gateway drops the connection
+        val CTRL_NACK = setOf(0x0003, 0x0043, 0x00FF)  // gateway can't route to that ECU
 
         const val ECU_DME = 0x12
         const val ECU_EGS = 0x18
@@ -126,7 +129,9 @@ class HsfzClient(private val network: Network?) : Closeable {
             if (left <= 0) break
             socket?.soTimeout = left.toInt().coerceAtLeast(1)
             val (ctrl, payload) = readFrame()
-            if (ctrl != CTRL_DIAG || payload.size < 3) continue            // ack / alive check etc.
+            if (ctrl == CTRL_ALIVE_REQ) { answerAlive(); continue }
+            if (ctrl in CTRL_NACK) throw SocketTimeoutException("Gateway cannot reach ECU %02X".format(target))
+            if (ctrl != CTRL_DIAG || payload.size < 3) continue            // ack etc.
             val src = payload[0].toInt() and 0xFF
             val dst = payload[1].toInt() and 0xFF
             if (dst != TESTER) continue
@@ -140,6 +145,12 @@ class HsfzClient(private val network: Network?) : Closeable {
             while (inbox.size > 16) inbox.removeFirst()
         }
         throw SocketTimeoutException("No response from ECU %02X".format(target))
+    }
+
+    private fun answerAlive() {
+        val out = output ?: return
+        out.write(byteArrayOf(0, 0, 0, 2, 0, CTRL_ALIVE_RESP.toByte(), 0, TESTER.toByte()))
+        out.flush()
     }
 
     private fun readFrame(): Pair<Int, ByteArray> {

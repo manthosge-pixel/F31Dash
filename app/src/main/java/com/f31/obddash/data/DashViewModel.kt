@@ -89,6 +89,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     val pollRate: StateFlow<Double> = _pollRate.asStateFlow()
 
     @Volatile private var client: HsfzClient? = null
+    @Volatile private var lastIp: String? = null
+    @Volatile private var lastVin: String? = null
+    @Volatile private var reconnects = 0
     /** Where OBD Mode 01 requests go: the DME itself (12) or the OBD functional address (DF). */
     @Volatile private var obdTarget: Int = HsfzClient.ECU_DME
 
@@ -132,6 +135,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun stop() {
+        endTrip()
         lockWifi(false)
         job?.cancel()
         job = null
@@ -205,15 +209,23 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val net = NetworkUtil.findWifiNetwork(getApplication())
                 _status.value = ConnStatus(ConnState.SEARCHING, "Searching for car…")
-                var vin: String? = null
+                var vin: String? = lastVin
                 val ip = _manualIp.value.ifBlank { null }
+                    ?: lastIp
                     ?: EnetDiscovery.discover(net)?.also { vin = it.vin }?.ip
                     ?: throw IOException("Car not found. Ignition on and phone on WIFI_ENET?")
 
                 _status.value = ConnStatus(ConnState.CONNECTING, ip)
                 val c = HsfzClient(net)
-                c.connect(ip)
+                try {
+                    c.connect(ip)
+                } catch (e: IOException) {
+                    lastIp = null            // address may have changed: discover again next time
+                    throw e
+                }
                 client = c
+                lastIp = ip; lastVin = vin
+                reconnects++
                 _status.value = ConnStatus(ConnState.CONNECTED, ip + (vin?.let { " · $it" } ?: ""))
                 _unsupported.value = emptySet()
                 obdTarget = detectObdTarget(c)
@@ -223,11 +235,13 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 _status.value = ConnStatus(ConnState.ERROR, e.message ?: e.javaClass.simpleName)
             } finally {
-                endTrip()
                 client?.close()
                 client = null
             }
-            delay(3000)
+            // a short drop doesn't split the drive; a minute without data ends it
+            if (recorder.active && System.currentTimeMillis() - lastRecordMs > 60_000) endTrip()
+            // quick retry first (the car is usually still there), slower after repeated failures
+            delay(if (lastIp != null) 300 else 2000)
         }
     }
 
@@ -321,7 +335,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
             val due: List<Pair<SensorId, DidSource>> = SENSORS.filter { d ->
                 !d.derived && d.id !in unsup && cfg[d.id] != null && when {
-                    d.id == SensorId.GEAR -> false          // handled in parallel, see step 0
+                    d.id == SensorId.GEAR -> if (gearPause > 0) { gearPause--; false } else true
                     d.id == SensorId.TRANS_TEMP -> cycle % 20 == 5
                     d.id == SensorId.OIL_PRESSURE -> cycle % 2 == 1
                     d.fast -> true
@@ -330,27 +344,6 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             }.map { it.id to cfg.getValue(it.id) }
 
             val singles = ArrayList<Pair<SensorId, DidSource>>()
-
-            // ---- 0. gear: ask the gearbox now, collect the answer later.
-            //         The EGS works on it while the DME answers the engine requests.
-            val gearSrc = cfg[SensorId.GEAR]
-            var gearSent = false
-            if (gearSrc != null && SensorId.GEAR !in unsup && gearSrc.ecu != HsfzClient.ECU_DME) {
-                if (gearPause > 0) gearPause--
-                else { c.send(gearSrc.ecu, gearSrc.requestBytes()); gearSent = true; asked++ }
-            }
-            fun collectGear() {
-                if (!gearSent || gearSrc == null) return
-                gearSent = false
-                val resp = try {
-                    c.await(gearSrc.ecu, gearSrc.requestBytes(), 400)
-                } catch (e: SocketTimeoutException) {
-                    timeouts++; gearPause = 10; null      // EGS busy: leave it alone for a moment
-                }
-                if (resp == null) { bad(SensorId.GEAR, "timeout"); return }
-                val v = gearSrc.decode(resp)
-                if (v != null) good(SensorId.GEAR, v, resp.toHex()) else bad(SensorId.GEAR, resp.toHex())
-            }
 
             // ---- 1. OBD Mode 01, several PIDs per request
             val obdItems = due.filter { (_, s) -> s.obd && s.ecu == HsfzClient.ECU_DME && OBD_PID_LEN.containsKey(s.did) }
@@ -398,17 +391,16 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
             // ---- 3. everything else, one by one
             singles += due.filter { (_, s) -> !(s.obd && s.ecu == HsfzClient.ECU_DME && OBD_PID_LEN.containsKey(s.did)) && !(!s.obd && s.ecu == HsfzClient.ECU_DME) }
-            // never two requests in flight to the same ECU
-            if (singles.any { (_, s) -> !s.obd && s.ecu == gearSrc?.ecu }) collectGear()
             for ((id, src) in singles) {
                 val target = if (src.obd && src.ecu == HsfzClient.ECU_DME) obdTarget else src.ecu
                 val resp = ask(target, src.requestBytes())
-                if (resp == null) { bad(id, "timeout"); continue }
+                if (resp == null) {
+                    if (id == SensorId.GEAR) gearPause = 10      // gearbox busy: leave it alone a moment
+                    bad(id, "timeout"); continue
+                }
                 val v = src.decode(resp)
                 if (v != null) good(id, v, resp.toHex()) else bad(id, resp.toHex())
             }
-
-            collectGear()
 
             if (asked > 0 && timeouts == asked) throw IOException("Car not responding")
 
@@ -488,7 +480,10 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     private val _tripLive = MutableStateFlow(TripLive())
     val tripLive: StateFlow<TripLive> = _tripLive.asStateFlow()
 
+    @Volatile private var lastRecordMs = 0L
+
     private fun record(vals: Map<SensorId, Double>) {
+        lastRecordMs = System.currentTimeMillis()
         val done = recorder.onSample(vals)
         _recording.value = recorder.active
         _tripLive.value = TripLive(recorder.active, recorder.liveKm, recorder.liveFuelL, recorder.liveDurationS())
@@ -588,7 +583,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.17 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.18 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
@@ -598,7 +593,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         sb.appendLine("OBD target: %02X".format(obdTarget))
         sb.appendLine("Updates/s: %.1f · avg request: %.0f ms · multi-PID: %s".format(_pollRate.value, client?.avgLatencyMs ?: 0.0, multiObdOk))
         sb.appendLine("Dynamic DID F3xx: ok=%s defined=%s · %s".format(dynOk, dynDefined != null, dynInfo))
-        sb.appendLine("Wi-Fi low-latency lock: %s".format(wifiLock?.isHeld == true))
+        sb.appendLine("Wi-Fi low-latency lock: %s · connections: %d".format(wifiLock?.isHeld == true, reconnects))
         val tests = listOf(
             0x12 to "01 00",        // supported PIDs 01-20
             0x12 to "01 20",        // supported PIDs 21-40
