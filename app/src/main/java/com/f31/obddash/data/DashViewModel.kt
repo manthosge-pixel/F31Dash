@@ -93,6 +93,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var lastVin: String? = null
     @Volatile private var reconnects = 0
     @Volatile private var connDetail = ""
+    /** Why the last connections ended (time + reason), for the diagnostic report. */
+    private val dropLog = ArrayDeque<String>()
     /** Where OBD Mode 01 requests go: the DME itself (12) or the OBD functional address (DF). */
     @Volatile private var obdTarget: Int = HsfzClient.ECU_DME
 
@@ -237,7 +239,12 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _status.value = ConnStatus(ConnState.ERROR, e.message ?: e.javaClass.simpleName)
+                val why = e.message ?: e.javaClass.simpleName
+                synchronized(dropLog) {
+                    dropLog.addLast(java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date()) + " " + why)
+                    while (dropLog.size > 6) dropLog.removeFirst()
+                }
+                _status.value = ConnStatus(ConnState.ERROR, why)
             } finally {
                 client?.close()
                 client = null
@@ -613,7 +620,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.21 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.22 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
@@ -625,6 +632,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         sb.appendLine("Dynamic DID F3xx: ok=%s defined=%s · %s".format(dynOk, dynDefined != null, dynInfo))
         sb.appendLine("Wi-Fi low-latency lock: %s · connections: %d · foreign answers: %d".format(
             wifiLock?.isHeld == true, reconnects, client?.foreignAnswers ?: 0))
+        synchronized(dropLog) {
+            if (dropLog.isNotEmpty()) sb.appendLine("Last drops: " + dropLog.joinToString(" | "))
+        }
         val tests = listOf(
             0x12 to "01 00",        // supported PIDs 01-20
             0x12 to "01 20",        // supported PIDs 21-40

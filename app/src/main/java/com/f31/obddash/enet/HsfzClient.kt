@@ -4,9 +4,8 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import java.io.BufferedInputStream
 import java.io.Closeable
-import java.io.DataInputStream
+import java.io.InputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.net.DatagramPacket
@@ -43,7 +42,15 @@ class HsfzClient(private val network: Network?) : Closeable {
     }
 
     private var socket: Socket? = null
-    private var input: DataInputStream? = null
+    private var input: InputStream? = null
+
+    /**
+     * Receive buffer. Bytes stay here until a whole HSFZ frame has arrived, so a timeout
+     * in the middle of a frame never loses data (that used to desync the stream and drop
+     * the connection on slower Wi-Fi like the head unit's).
+     */
+    private var rbuf = ByteArray(4096)
+    private var rlen = 0
     private var output: OutputStream? = null
 
     /** Average request round-trip (ms), exponential moving average. */
@@ -65,7 +72,8 @@ class HsfzClient(private val network: Network?) : Closeable {
         s.connect(InetSocketAddress(host, DIAG_PORT), timeoutMs)
         s.soTimeout = 1500
         socket = s
-        input = DataInputStream(BufferedInputStream(s.getInputStream()))
+        input = s.getInputStream()
+        rlen = 0
         output = s.getOutputStream()
     }
 
@@ -146,7 +154,7 @@ class HsfzClient(private val network: Network?) : Closeable {
         while (true) {
             val left = deadline - System.currentTimeMillis()
             if (left <= 0) break
-            socket?.soTimeout = left.toInt().coerceAtLeast(1)
+            socket?.soTimeout = left.toInt().coerceAtLeast(20)
             val (ctrl, payload) = readFrame()
             if (ctrl == CTRL_ALIVE_REQ) { answerAlive(); continue }
             if (ctrl in CTRL_NACK) throw SocketTimeoutException("Gateway cannot reach ECU %02X".format(target))
@@ -173,19 +181,39 @@ class HsfzClient(private val network: Network?) : Closeable {
         out.flush()
     }
 
+    /** Takes one complete frame out of the buffer, or null if it hasn't fully arrived yet. */
+    private fun takeFrame(): Pair<Int, ByteArray>? {
+        if (rlen < 6) return null
+        val len = ((rbuf[0].toInt() and 0xFF) shl 24) or ((rbuf[1].toInt() and 0xFF) shl 16) or
+            ((rbuf[2].toInt() and 0xFF) shl 8) or (rbuf[3].toInt() and 0xFF)
+        val ctrl = ((rbuf[4].toInt() and 0xFF) shl 8) or (rbuf[5].toInt() and 0xFF)
+        if (len < 0 || len > 65536) throw IOException("Bad HSFZ frame length $len")
+        if (rlen < 6 + len) return null
+        val payload = rbuf.copyOfRange(6, 6 + len)
+        val rest = rlen - 6 - len
+        System.arraycopy(rbuf, 6 + len, rbuf, 0, rest)
+        rlen = rest
+        return ctrl to payload
+    }
+
+    /**
+     * Reads one frame. A SocketTimeoutException may be thrown while waiting, but whatever
+     * part of a frame already arrived stays in [rbuf] for the next call.
+     */
     private fun readFrame(): Pair<Int, ByteArray> {
         val inp = input ?: throw IOException("Not connected")
-        val len = inp.readInt()
-        val ctrl = inp.readUnsignedShort()
-        if (len < 0 || len > 65536) throw IOException("Bad HSFZ frame length $len")
-        val payload = ByteArray(len)
-        inp.readFully(payload)
-        return ctrl to payload
+        while (true) {
+            takeFrame()?.let { return it }
+            if (rlen == rbuf.size) rbuf = rbuf.copyOf(rbuf.size * 2)
+            val n = inp.read(rbuf, rlen, rbuf.size - rlen)
+            if (n < 0) throw IOException("Connection closed by the car/adapter")
+            rlen += n
+        }
     }
 
     override fun close() {
         try { socket?.close() } catch (_: Exception) {}
-        socket = null; input = null; output = null
+        socket = null; input = null; output = null; rlen = 0
     }
 }
 
