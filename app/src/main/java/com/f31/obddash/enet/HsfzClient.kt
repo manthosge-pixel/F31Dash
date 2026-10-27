@@ -69,6 +69,7 @@ class HsfzClient(private val network: Network?) : Closeable {
         val s = Socket()
         network?.bindSocket(s)
         s.tcpNoDelay = true
+        s.keepAlive = true
         s.connect(InetSocketAddress(host, DIAG_PORT), timeoutMs)
         s.soTimeout = 1500
         socket = s
@@ -258,6 +259,20 @@ object EnetDiscovery {
 }
 
 object NetworkUtil {
+    /** IPv4 address the screen/phone has on [net] (to see if it is on the car adapter's Wi-Fi). */
+    fun ipv4(ctx: Context, net: Network?): String? {
+        val cm = ctx.getSystemService(ConnectivityManager::class.java) ?: return null
+        if (net == null) return null
+        return cm.getLinkProperties(net)?.linkAddresses
+            ?.mapNotNull { it.address as? java.net.Inet4Address }
+            ?.firstOrNull()?.hostAddress
+    }
+
+    fun sameSubnet(a: String?, b: String?): Boolean {
+        if (a == null || b == null) return true
+        return a.substringBeforeLast('.') == b.substringBeforeLast('.')
+    }
+
     /**
      * The ENET Wi-Fi has no internet, so Android may route sockets over mobile data.
      * We bind our sockets to the Wi-Fi network explicitly.

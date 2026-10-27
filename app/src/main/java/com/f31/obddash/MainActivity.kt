@@ -193,6 +193,7 @@ private fun TopBar(
             ConnState.CONNECTED -> C.Green
             ConnState.DEMO -> C.Amber
             ConnState.SEARCHING, ConnState.CONNECTING -> C.Blue
+            ConnState.RECONNECTING -> C.Amber
             ConnState.ERROR -> C.Red
             ConnState.DISCONNECTED -> C.Dim
         }
@@ -201,6 +202,7 @@ private fun TopBar(
             ConnState.DEMO -> "DEMO MODE"
             ConnState.SEARCHING -> "SEARCHING…"
             ConnState.CONNECTING -> "CONNECTING…"
+            ConnState.RECONNECTING -> "RECONNECTING…"
             ConnState.ERROR -> "ENET ERROR"
             ConnState.DISCONNECTED -> "ENET DISCONNECTED"
         }

@@ -27,7 +27,7 @@ import java.net.SocketTimeoutException
 import kotlin.math.max
 import kotlin.math.sin
 
-enum class ConnState { DISCONNECTED, SEARCHING, CONNECTING, CONNECTED, ERROR, DEMO }
+enum class ConnState { DISCONNECTED, SEARCHING, CONNECTING, CONNECTED, RECONNECTING, ERROR, DEMO }
 
 data class ConnStatus(val state: ConnState, val detail: String)
 
@@ -93,6 +93,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var lastVin: String? = null
     @Volatile private var reconnects = 0
     @Volatile private var connDetail = ""
+    @Volatile private var downSince = 0L
+    @Volatile private var wifiIp: String? = null
+    @Volatile private var obdTargetFor: String? = null
     /** Why the last connections ended (time + reason), for the diagnostic report. */
     private val dropLog = ArrayDeque<String>()
     /** Where OBD Mode 01 requests go: the DME itself (12) or the OBD functional address (DF). */
@@ -213,14 +216,19 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         while (currentCoroutineContext().isActive) {
             try {
                 val net = NetworkUtil.findWifiNetwork(getApplication())
-                _status.value = ConnStatus(ConnState.SEARCHING, "Searching for car…")
+                wifiIp = NetworkUtil.ipv4(getApplication(), net)
+                if (net == null) throw IOException("Wi-Fi is off or not connected")
+                // the screen jumped to another Wi-Fi (e.g. home) → the car can't be reached
+                if (lastIp != null && !NetworkUtil.sameSubnet(wifiIp, lastIp))
+                    throw IOException("Wi-Fi is on another network (IP $wifiIp) – not the car adapter. Home Wi-Fi?")
+                if (downSince == 0L) _status.value = ConnStatus(ConnState.SEARCHING, "Searching for car…")
                 var vin: String? = lastVin
                 val ip = _manualIp.value.ifBlank { null }
                     ?: lastIp
                     ?: EnetDiscovery.discover(net)?.also { vin = it.vin }?.ip
                     ?: throw IOException("Car not found. Ignition on and phone on WIFI_ENET?")
 
-                _status.value = ConnStatus(ConnState.CONNECTING, ip)
+                if (downSince == 0L) _status.value = ConnStatus(ConnState.CONNECTING, ip)
                 val c = HsfzClient(net)
                 try {
                     c.connect(ip)
@@ -233,18 +241,25 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 reconnects++
                 connDetail = ip + (vin?.let { " · $it" } ?: "")
                 _status.value = ConnStatus(ConnState.CONNECTED, connDetail)
+                downSince = 0L
                 _unsupported.value = emptySet()
-                obdTarget = detectObdTarget(c)
+                // a quick reconnect to the same car doesn't need the slow detection again
+                if (obdTargetFor != ip) { obdTarget = detectObdTarget(c); obdTargetFor = ip }
                 pollLoop(c)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 val why = e.message ?: e.javaClass.simpleName
                 synchronized(dropLog) {
-                    dropLog.addLast(java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date()) + " " + why)
+                    dropLog.addLast(java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date()) + " " + why + " [Wi-Fi " + (wifiIp ?: "-") + "]")
                     while (dropLog.size > 6) dropLog.removeFirst()
                 }
-                _status.value = ConnStatus(ConnState.ERROR, why)
+                // short drops: keep the last values on screen and just show "reconnecting"
+                val now = System.currentTimeMillis()
+                if (downSince == 0L) downSince = now
+                _status.value = if (now - downSince < 6000 && lastIp != null)
+                    ConnStatus(ConnState.RECONNECTING, why)
+                else ConnStatus(ConnState.ERROR, why)
             } finally {
                 client?.close()
                 client = null
@@ -348,7 +363,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             fun ask(target: Int, req: ByteArray): ByteArray? {
                 asked++
                 return try {
-                    c.request(target, req, 700)
+                    c.request(target, req, 1000)
                 } catch (e: SocketTimeoutException) {
                     timeouts++; null
                 }
@@ -620,14 +635,14 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.22 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.23 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
             sb.appendLine("No TCP connection to the car.")
             return@withContext sb.toString()
         }
-        sb.appendLine("OBD target: %02X".format(obdTarget))
+        sb.appendLine("OBD target: %02X · screen Wi-Fi IP: %s".format(obdTarget, wifiIp ?: "-"))
         sb.appendLine("Updates/s: %.1f · avg request: %.0f ms · multi-PID: %s".format(_pollRate.value, client?.avgLatencyMs ?: 0.0, multiObdOk))
         sb.appendLine("Dynamic DID F3xx: ok=%s defined=%s · %s".format(dynOk, dynDefined != null, dynInfo))
         sb.appendLine("Wi-Fi low-latency lock: %s · connections: %d · foreign answers: %d".format(
