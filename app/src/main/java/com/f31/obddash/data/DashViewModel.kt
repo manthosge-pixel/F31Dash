@@ -330,7 +330,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         var cycle = 0
         var gearPause = 0
         var transPause = 0
-        var deadCycles = 0
+        var lastGoodMs = System.currentTimeMillis()
         var foreignLast = 0
         var foreignT0 = System.currentTimeMillis()
         val fails = HashMap<SensorId, Int>()
@@ -350,6 +350,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             var timeouts = 0
 
             fun good(id: SensorId, v: Double, raw: String) {
+                lastGoodMs = System.currentTimeMillis()
                 fails[id] = 0; vals[id] = v; raws[id] = raw
             }
             fun bad(id: SensorId, raw: String) {
@@ -366,7 +367,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 return try {
                     c.request(target, req, c.timeoutFor(target))
                 } catch (e: SocketTimeoutException) {
-                    timeouts++; null
+                    timeouts++
+                    c.drain(target, 800)         // let the late answer come in before asking more
+                    null
                 }
             }
 
@@ -442,10 +445,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 if (v != null) good(id, v, resp.toHex()) else bad(id, resp.toHex())
             }
 
-            if (asked > 0 && timeouts == asked) {
-                deadCycles++
-                if (deadCycles >= 8) throw IOException("Car not responding")
-            } else deadCycles = 0
+            // reconnect only when nothing at all came back for a while
+            if (System.currentTimeMillis() - lastGoodMs > 6000) throw IOException("Car not responding for 6 s")
 
             // another tester on the same car steals our answers → tell the user
             val foreign = c.foreignAnswers
@@ -637,7 +638,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.25 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.26 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {

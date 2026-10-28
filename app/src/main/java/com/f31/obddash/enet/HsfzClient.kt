@@ -70,7 +70,7 @@ class HsfzClient(private val network: Network?) : Closeable {
     /** How long to wait for [ecu]: a few times its usual answer time, 150–400 ms. */
     @Synchronized
     fun timeoutFor(ecu: Int): Long =
-        ((ecuLatency[ecu] ?: 100.0) * 5).toLong().coerceIn(150, 400)
+        ((ecuLatency[ecu] ?: 100.0) * 6).toLong().coerceIn(200, 400)
 
     @Synchronized
     fun latencyReport(): String =
@@ -189,6 +189,31 @@ class HsfzClient(private val network: Network?) : Closeable {
             else foreignAnswers++
         }
         throw SocketTimeoutException("No response from ECU %02X".format(target))
+    }
+
+    /**
+     * After a timeout: wait (up to [maxMsAfterSend] after the request was sent) for the late
+     * answer from [target] and throw it away. Sending more requests meanwhile only queues
+     * them up in the gateway, which made the stall longer.
+     */
+    @Synchronized
+    fun drain(target: Int, maxMsAfterSend: Long) {
+        val sent = sentAt[target] ?: return
+        val deadlineNs = sent + maxMsAfterSend * 1_000_000L
+        while (true) {
+            val leftMs = (deadlineNs - System.nanoTime()) / 1_000_000L
+            if (leftMs <= 0) return
+            socket?.soTimeout = leftMs.toInt().coerceAtLeast(20)
+            val (ctrl, payload) = try { readFrame() } catch (e: SocketTimeoutException) { return }
+            if (ctrl == CTRL_ALIVE_REQ) { answerAlive(); continue }
+            if (ctrl != CTRL_DIAG || payload.size < 3) continue
+            if ((payload[1].toInt() and 0xFF) != TESTER) continue
+            val src = payload[0].toInt() and 0xFF
+            if (payload.size >= 5 && (payload[2].toInt() and 0xFF) == 0x7F && (payload[4].toInt() and 0xFF) == 0x78) continue
+            lateAnswers++
+            lateByEcu[src] = (lateByEcu[src] ?: 0) + 1
+            if (src == target) return
+        }
     }
 
     private fun answerAlive() {
