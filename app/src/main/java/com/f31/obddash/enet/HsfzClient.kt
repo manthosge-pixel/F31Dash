@@ -57,10 +57,26 @@ class HsfzClient(private val network: Network?) : Closeable {
     @Volatile var avgLatencyMs: Double = 0.0
         private set
 
-    private fun noteLatency(t0: Long) {
+    /** Per-ECU average answer time and late-answer count. */
+    private val ecuLatency = HashMap<Int, Double>()
+    val lateByEcu = HashMap<Int, Int>()
+
+    private fun noteLatency(t0: Long, ecu: Int = -1) {
         val ms = (System.nanoTime() - t0) / 1e6
         avgLatencyMs = if (avgLatencyMs == 0.0) ms else avgLatencyMs * 0.8 + ms * 0.2
+        if (ecu >= 0) ecuLatency[ecu] = ecuLatency[ecu]?.let { it * 0.8 + ms * 0.2 } ?: ms
     }
+
+    /** How long to wait for [ecu]: a few times its usual answer time, 150–400 ms. */
+    @Synchronized
+    fun timeoutFor(ecu: Int): Long =
+        ((ecuLatency[ecu] ?: 100.0) * 5).toLong().coerceIn(150, 400)
+
+    @Synchronized
+    fun latencyReport(): String =
+        ecuLatency.entries.sortedBy { it.key }.joinToString("  ") { (e, ms) ->
+            "%02X: %.0f ms, late %d".format(e, ms, lateByEcu[e] ?: 0)
+        }
 
     val isConnected: Boolean
         get() = socket?.let { it.isConnected && !it.isClosed } == true
@@ -162,11 +178,14 @@ class HsfzClient(private val network: Network?) : Closeable {
             val resp = payload.copyOfRange(2, payload.size)
             if (resp.size >= 3 && (resp[0].toInt() and 0xFF) == 0x7F && (resp[2].toInt() and 0xFF) == 0x78) continue // pending
             if (matches(target, uds, src, resp)) {
-                sentAt[target]?.let { t -> noteLatency(t) }
+                sentAt[target]?.let { t -> noteLatency(t, src) }
                 return resp
             }
             val askedAt = sentAt[src]
-            if (askedAt != null && System.nanoTime() - askedAt < 10_000_000_000L) lateAnswers++
+            if (askedAt != null && System.nanoTime() - askedAt < 10_000_000_000L) {
+                lateAnswers++
+                lateByEcu[src] = (lateByEcu[src] ?: 0) + 1
+            }
             else foreignAnswers++
         }
         throw SocketTimeoutException("No response from ECU %02X".format(target))

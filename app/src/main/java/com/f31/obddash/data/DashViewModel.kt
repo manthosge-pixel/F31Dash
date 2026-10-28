@@ -329,6 +329,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun pollLoop(c: HsfzClient) {
         var cycle = 0
         var gearPause = 0
+        var transPause = 0
         var deadCycles = 0
         var foreignLast = 0
         var foreignT0 = System.currentTimeMillis()
@@ -363,7 +364,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             fun ask(target: Int, req: ByteArray): ByteArray? {
                 asked++
                 return try {
-                    c.request(target, req, 500)
+                    c.request(target, req, c.timeoutFor(target))
                 } catch (e: SocketTimeoutException) {
                     timeouts++; null
                 }
@@ -372,7 +373,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             val due: List<Pair<SensorId, DidSource>> = SENSORS.filter { d ->
                 !d.derived && d.id !in unsup && cfg[d.id] != null && when {
                     d.id == SensorId.GEAR -> if (gearPause > 0) { gearPause--; false } else true
-                    d.id == SensorId.TRANS_TEMP -> cycle % 20 == 5
+                    d.id == SensorId.TRANS_TEMP -> if (transPause > 0) { transPause--; false } else cycle % 80 == 5
                     d.id == SensorId.OIL_PRESSURE -> cycle % 2 == 1
                     d.fast -> true
                     else -> cycle % 6 == 2
@@ -434,6 +435,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 val resp = ask(target, src.requestBytes())
                 if (resp == null) {
                     if (id == SensorId.GEAR) gearPause = 10      // gearbox busy: leave it alone a moment
+                    if (id == SensorId.TRANS_TEMP) transPause = 400   // slow value: try again much later
                     lost(id); continue
                 }
                 val v = src.decode(resp)
@@ -635,7 +637,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.24 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.25 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
@@ -648,6 +650,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         sb.appendLine("Wi-Fi low-latency lock: %s · connections: %d · foreign answers: %d".format(
             wifiLock?.isHeld == true, reconnects, client?.foreignAnswers ?: 0))
         sb.appendLine("Late answers (dropped): %d".format(client?.lateAnswers ?: 0))
+        sb.appendLine("Per ECU: " + (client?.latencyReport() ?: "-"))
         synchronized(dropLog) {
             if (dropLog.isNotEmpty()) sb.appendLine("Last drops: " + dropLog.joinToString(" | "))
         }
