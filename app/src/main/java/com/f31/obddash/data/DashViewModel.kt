@@ -363,7 +363,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             fun ask(target: Int, req: ByteArray): ByteArray? {
                 asked++
                 return try {
-                    c.request(target, req, 1000)
+                    c.request(target, req, 500)
                 } catch (e: SocketTimeoutException) {
                     timeouts++; null
                 }
@@ -635,7 +635,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.23 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App 0.24 · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
@@ -647,6 +647,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         sb.appendLine("Dynamic DID F3xx: ok=%s defined=%s · %s".format(dynOk, dynDefined != null, dynInfo))
         sb.appendLine("Wi-Fi low-latency lock: %s · connections: %d · foreign answers: %d".format(
             wifiLock?.isHeld == true, reconnects, client?.foreignAnswers ?: 0))
+        sb.appendLine("Late answers (dropped): %d".format(client?.lateAnswers ?: 0))
         synchronized(dropLog) {
             if (dropLog.isNotEmpty()) sb.appendLine("Last drops: " + dropLog.joinToString(" | "))
         }

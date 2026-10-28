@@ -78,11 +78,13 @@ class HsfzClient(private val network: Network?) : Closeable {
         output = s.getOutputStream()
     }
 
-    /** Answers that arrived while we were waiting for another ECU (src to UDS response). */
-    private val inbox = ArrayDeque<Pair<Int, ByteArray>>()
     private val sentAt = HashMap<Int, Long>()
 
-    /** Answers nobody here asked for — a sign that another tester (phone, BimmerLink…) is connected. */
+    /** Answers from an ECU we asked recently, that came too late (after we stopped waiting). Dropped. */
+    @Volatile var lateAnswers = 0
+        private set
+
+    /** Answers from an ECU we never asked — a sign that another tester (phone, BimmerLink…) is connected. */
     @Volatile var foreignAnswers = 0
         private set
 
@@ -143,14 +145,8 @@ class HsfzClient(private val network: Network?) : Closeable {
     /** Waits for the answer to a request sent earlier with [send]. */
     @Synchronized
     fun await(target: Int, uds: ByteArray, timeoutMs: Long = 1500): ByteArray {
-        // already arrived while waiting for someone else?
-        val it = inbox.iterator()
-        while (it.hasNext()) {
-            val (src, resp) = it.next()
-            if (matches(target, uds, src, resp)) {
-                it.remove(); sentAt[target]?.let { t -> noteLatency(t) }; return resp
-            }
-        }
+        // Late answers to earlier requests are never kept: re-using one as the answer to a
+        // newer request made the data lag a cycle behind and caused a chain of timeouts.
         val deadline = System.currentTimeMillis() + timeoutMs
         while (true) {
             val left = deadline - System.currentTimeMillis()
@@ -169,9 +165,9 @@ class HsfzClient(private val network: Network?) : Closeable {
                 sentAt[target]?.let { t -> noteLatency(t) }
                 return resp
             }
-            foreignAnswers++
-            inbox.addLast(src to resp)
-            while (inbox.size > 16) inbox.removeFirst()
+            val askedAt = sentAt[src]
+            if (askedAt != null && System.nanoTime() - askedAt < 10_000_000_000L) lateAnswers++
+            else foreignAnswers++
         }
         throw SocketTimeoutException("No response from ECU %02X".format(target))
     }
