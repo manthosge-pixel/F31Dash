@@ -271,6 +271,21 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Set while a tool (diagnostic, codes, TEST) talks to the car, so the poll loop stays quiet. */
+    @Volatile private var pausePoll = false
+    @Volatile private var pollPaused = false
+
+    private suspend fun <T> withPollPaused(block: suspend () -> T): T {
+        pausePoll = true
+        try {
+            val t0 = System.currentTimeMillis()
+            while (!pollPaused && job?.isActive == true && System.currentTimeMillis() - t0 < 2000) delay(20)
+            return block()
+        } finally {
+            pausePoll = false
+        }
+    }
+
     @Volatile private var multiObdOk = true
     @Volatile private var dynOk = true
     @Volatile private var dynFails = 0
@@ -342,6 +357,13 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         dynDefined = null
 
         while (currentCoroutineContext().isActive) {
+            if (pausePoll) {
+                pollPaused = true
+                lastGoodMs = System.currentTimeMillis()
+                delay(30)
+                continue
+            }
+            pollPaused = false
             val cfg = _sources.value
             val unsup = _unsupported.value
             val vals = HashMap(_values.value)
@@ -384,6 +406,20 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             }.map { it.id to cfg.getValue(it.id) }
 
             val singles = ArrayList<Pair<SensorId, DidSource>>()
+
+            fun handle(id: SensorId, src: DidSource, resp: ByteArray?) {
+                if (resp == null) {
+                    if (id == SensorId.GEAR) gearPause = 10      // gearbox busy: leave it alone a moment
+                    if (id == SensorId.TRANS_TEMP) transPause = 400   // slow value: try again much later
+                    lost(id); return
+                }
+                val v = src.decode(resp)
+                if (v != null) good(id, v, resp.toHex()) else bad(id, resp.toHex())
+            }
+
+            // ---- 0. gearbox first, without waiting: it answers while we talk to the DME
+            val piped = due.firstOrNull { (_, s) -> !s.obd && s.ecu == HsfzClient.ECU_EGS }
+            if (piped != null) { c.sendAsync(HsfzClient.ECU_EGS, piped.second.requestBytes()); asked++ }
 
             // ---- 1. OBD Mode 01, several PIDs per request
             val obdItems = due.filter { (_, s) -> s.obd && s.ecu == HsfzClient.ECU_DME && OBD_PID_LEN.containsKey(s.did) }
@@ -431,18 +467,24 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } else singles += due.filter { (_, s) -> !s.obd && s.ecu == HsfzClient.ECU_DME }
 
+            // ---- 2b. collect the gearbox answer
+            if (piped != null) {
+                val resp = try {
+                    c.await(HsfzClient.ECU_EGS, piped.second.requestBytes(), c.timeoutFor(HsfzClient.ECU_EGS))
+                } catch (e: SocketTimeoutException) {
+                    timeouts++
+                    c.drain(HsfzClient.ECU_EGS, 800)
+                    null
+                }
+                handle(piped.first, piped.second, resp)
+            }
+
             // ---- 3. everything else, one by one
             singles += due.filter { (_, s) -> !(s.obd && s.ecu == HsfzClient.ECU_DME && OBD_PID_LEN.containsKey(s.did)) && !(!s.obd && s.ecu == HsfzClient.ECU_DME) }
             for ((id, src) in singles) {
+                if (id == piped?.first) continue
                 val target = if (src.obd && src.ecu == HsfzClient.ECU_DME) obdTarget else src.ecu
-                val resp = ask(target, src.requestBytes())
-                if (resp == null) {
-                    if (id == SensorId.GEAR) gearPause = 10      // gearbox busy: leave it alone a moment
-                    if (id == SensorId.TRANS_TEMP) transPause = 400   // slow value: try again much later
-                    lost(id); continue
-                }
-                val v = src.decode(resp)
-                if (v != null) good(id, v, resp.toHex()) else bad(id, resp.toHex())
+                handle(id, src, ask(target, src.requestBytes()))
             }
 
             // reconnect only when nothing at all came back for a while
@@ -600,7 +642,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     // ---------------------------------------------------------------- tools
 
     suspend fun readDtcs(ecu: Int): Result<List<Dtc>> = withContext(Dispatchers.IO) {
-        runCatching {
+        if (_demo.value) return@withContext Result.success(listOf(Dtc(0x120308, 0x2C), Dtc(0x480A07, 0x08)))
+        withPollPaused { runCatching {
             if (_demo.value) return@runCatching listOf(Dtc(0x120308, 0x2C), Dtc(0x480A07, 0x08))
             val c = client ?: error("Not connected to the car")
             val r = c.request(ecu, byteArrayOf(0x19, 0x02, 0x0C), 4000)
@@ -613,44 +656,55 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 i += 4
             }
             list
-        }
+        } }
     }
 
     suspend fun clearDtcs(ecu: Int): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
+        if (_demo.value) return@withContext Result.success(Unit)
+        withPollPaused { runCatching {
             if (_demo.value) return@runCatching
             val c = client ?: error("Not connected to the car")
             val r = c.request(ecu, byteArrayOf(0x14, 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte()), 6000)
             if ((r[0].toInt() and 0xFF) != 0x54) error("Clear failed: ${r.toHex()}")
-        }
+        } }
     }
 
     /** Free-form UDS request, used in SENSORS to look for BMW DIDs. */
     suspend fun rawRequest(ecuHex: String, udsHex: String): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
+        withPollPaused { runCatching {
             val c = client ?: error("Not connected to the car")
             val ecu = ecuHex.trim().toInt(16)
             c.request(ecu, udsHex.hexToBytes(), 3000).toHex()
-        }
+        } }
     }
 
     /** Sends a fixed set of requests and returns a readable report (for screenshots). */
-    suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) {
+    private val appVersion: String by lazy {
+        try {
+            val a = getApplication<Application>()
+            @Suppress("DEPRECATION")
+            a.packageManager.getPackageInfo(a.packageName, 0).versionName ?: "?"
+        } catch (_: Exception) { "?" }
+    }
+
+    suspend fun runDiagnostic(): String = withContext(Dispatchers.IO) { withPollPaused { diagnosticReport() } }
+
+    private fun diagnosticReport(): String {
         val sb = StringBuilder()
         val st = _status.value
-        sb.appendLine("App 0.26 · status: ${st.state} · ${st.detail}")
+        sb.appendLine("App $appVersion · status: ${st.state} · ${st.detail}")
         sb.appendLine("Unsupported: ${_unsupported.value.joinToString().ifEmpty { "-" }}")
         val c = client
         if (c == null || !c.isConnected) {
             sb.appendLine("No TCP connection to the car.")
-            return@withContext sb.toString()
+            return sb.toString()
         }
         sb.appendLine("OBD target: %02X · screen Wi-Fi IP: %s".format(obdTarget, wifiIp ?: "-"))
         sb.appendLine("Updates/s: %.1f · avg request: %.0f ms · multi-PID: %s".format(_pollRate.value, client?.avgLatencyMs ?: 0.0, multiObdOk))
         sb.appendLine("Dynamic DID F3xx: ok=%s defined=%s · %s".format(dynOk, dynDefined != null, dynInfo))
         sb.appendLine("Wi-Fi low-latency lock: %s · connections: %d · foreign answers: %d".format(
             wifiLock?.isHeld == true, reconnects, client?.foreignAnswers ?: 0))
-        sb.appendLine("Late answers (dropped): %d".format(client?.lateAnswers ?: 0))
+        sb.appendLine("Late answers (dropped): %d · gearbox in parallel: %d".format(client?.lateAnswers ?: 0, client?.pipelinedAnswers ?: 0))
         sb.appendLine("Per ECU: " + (client?.latencyReport() ?: "-"))
         synchronized(dropLog) {
             if (dropLog.isNotEmpty()) sb.appendLine("Last drops: " + dropLog.joinToString(" | "))
@@ -660,7 +714,6 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             0x12 to "01 20",        // supported PIDs 21-40
             0x12 to "01 40",        // supported PIDs 41-60
             0x12 to "01 34",        // O2 sensor 1 lambda + current
-            0x12 to "01 44",        // commanded lambda
             0x12 to "01 0B",        // MAP (OBD)
             0x12 to "22 44 02",     // BMW oil temp
             0x12 to "22 42 05",     // BMW charge pressure
@@ -670,12 +723,14 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             0x18 to "22 DA 12",     // EGS ATF temperature (raw)
         )
         for ((ecu, req) in tests) {
+            val t0 = System.nanoTime()
             val line = try {
                 c.request(ecu, req.hexToBytes(), 2500).toHex()
             } catch (e: Exception) {
                 "ERR ${e.javaClass.simpleName}: ${e.message}"
             }
-            sb.appendLine(String.format("%02X  %-9s → %s", ecu, req, line))
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            sb.appendLine(String.format("%02X  %-9s → %s  (%d ms)", ecu, req, line, ms))
         }
         sb.appendLine("--- sensors (raw → value) ---")
         _raw.value.forEach { (id, r) ->
@@ -684,7 +739,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         }
         sb.appendLine("BOOST: ${SENSOR_MAP.getValue(SensorId.BOOST).formatValue(_values.value[SensorId.BOOST])} bar")
         _unsupported.value = emptySet()
-        sb.toString()
+        return sb.toString()
     }
 
     // ---------------------------------------------------------------- demo

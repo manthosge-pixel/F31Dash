@@ -61,8 +61,8 @@ class HsfzClient(private val network: Network?) : Closeable {
     private val ecuLatency = HashMap<Int, Double>()
     val lateByEcu = HashMap<Int, Int>()
 
-    private fun noteLatency(t0: Long, ecu: Int = -1) {
-        val ms = (System.nanoTime() - t0) / 1e6
+    private fun noteLatency(t0: Long, ecu: Int = -1, at: Long = System.nanoTime()) {
+        val ms = (at - t0) / 1e6
         avgLatencyMs = if (avgLatencyMs == 0.0) ms else avgLatencyMs * 0.8 + ms * 0.2
         if (ecu >= 0) ecuLatency[ecu] = ecuLatency[ecu]?.let { it * 0.8 + ms * 0.2 } ?: ms
     }
@@ -95,6 +95,34 @@ class HsfzClient(private val network: Network?) : Closeable {
     }
 
     private val sentAt = HashMap<Int, Long>()
+
+    /**
+     * Requests sent with [sendAsync] that nobody is waiting for yet (one per ECU).
+     * While we wait for another ECU, their answers are kept in [stash] instead of being
+     * thrown away, so e.g. the gearbox can work on its answer while we talk to the DME.
+     */
+    private val pendingReq = HashMap<Int, ByteArray>()
+    private val stash = HashMap<Int, Pair<ByteArray, Long>>()
+
+    /** Answers that arrived while we were busy with another ECU and were used later. */
+    @Volatile var pipelinedAnswers = 0
+        private set
+
+    /** Sends a request to [target] and returns at once; collect the answer later with [await]. */
+    @Synchronized
+    fun sendAsync(target: Int, uds: ByteArray) {
+        stash.remove(target)
+        pendingReq[target] = uds
+        send(target, uds)
+    }
+
+    /** True (and stashed) if this frame answers a request sent with [sendAsync] to another ECU. */
+    private fun stashIfPending(src: Int, resp: ByteArray): Boolean {
+        val req = pendingReq[src] ?: return false
+        if (!matches(src, req, src, resp)) return false
+        stash[src] = resp to System.nanoTime()
+        return true
+    }
 
     /** Answers from an ECU we asked recently, that came too late (after we stopped waiting). Dropped. */
     @Volatile var lateAnswers = 0
@@ -163,6 +191,14 @@ class HsfzClient(private val network: Network?) : Closeable {
     fun await(target: Int, uds: ByteArray, timeoutMs: Long = 1500): ByteArray {
         // Late answers to earlier requests are never kept: re-using one as the answer to a
         // newer request made the data lag a cycle behind and caused a chain of timeouts.
+        stash.remove(target)?.let { (resp, at) ->
+            if (matches(target, uds, target, resp)) {
+                pendingReq.remove(target)
+                sentAt[target]?.let { t -> noteLatency(t, target, at) }
+                pipelinedAnswers++
+                return resp
+            }
+        }
         val deadline = System.currentTimeMillis() + timeoutMs
         while (true) {
             val left = deadline - System.currentTimeMillis()
@@ -178,9 +214,11 @@ class HsfzClient(private val network: Network?) : Closeable {
             val resp = payload.copyOfRange(2, payload.size)
             if (resp.size >= 3 && (resp[0].toInt() and 0xFF) == 0x7F && (resp[2].toInt() and 0xFF) == 0x78) continue // pending
             if (matches(target, uds, src, resp)) {
+                pendingReq.remove(target)
                 sentAt[target]?.let { t -> noteLatency(t, src) }
                 return resp
             }
+            if (src != target && stashIfPending(src, resp)) continue
             val askedAt = sentAt[src]
             if (askedAt != null && System.nanoTime() - askedAt < 10_000_000_000L) {
                 lateAnswers++
@@ -188,6 +226,7 @@ class HsfzClient(private val network: Network?) : Closeable {
             }
             else foreignAnswers++
         }
+        pendingReq.remove(target)
         throw SocketTimeoutException("No response from ECU %02X".format(target))
     }
 
@@ -198,6 +237,8 @@ class HsfzClient(private val network: Network?) : Closeable {
      */
     @Synchronized
     fun drain(target: Int, maxMsAfterSend: Long) {
+        pendingReq.remove(target)
+        if (stash.remove(target) != null) { lateAnswers++; lateByEcu[target] = (lateByEcu[target] ?: 0) + 1; return }
         val sent = sentAt[target] ?: return
         val deadlineNs = sent + maxMsAfterSend * 1_000_000L
         while (true) {
@@ -210,6 +251,7 @@ class HsfzClient(private val network: Network?) : Closeable {
             if ((payload[1].toInt() and 0xFF) != TESTER) continue
             val src = payload[0].toInt() and 0xFF
             if (payload.size >= 5 && (payload[2].toInt() and 0xFF) == 0x7F && (payload[4].toInt() and 0xFF) == 0x78) continue
+            if (src != target && stashIfPending(src, payload.copyOfRange(2, payload.size))) continue
             lateAnswers++
             lateByEcu[src] = (lateByEcu[src] ?: 0) + 1
             if (src == target) return
@@ -255,6 +297,7 @@ class HsfzClient(private val network: Network?) : Closeable {
     override fun close() {
         try { socket?.close() } catch (_: Exception) {}
         socket = null; input = null; output = null; rlen = 0
+        pendingReq.clear(); stash.clear()
     }
 }
 
