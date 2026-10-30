@@ -236,30 +236,41 @@ private fun GearBox(modifier: Modifier, gear: Double?, unavailable: Boolean) {
     }
 }
 
-/** F1-style shift light: lights up over the last 1500 rpm before the (oil-temp dependent) limit. */
+/**
+ * RPM bar: fills from idle (1000 rpm) up to the oil-temp dependent limit.
+ * Box colour depends on its rpm: green up to 70% of the limit, amber up to 90%, red above.
+ * Uses the smoothed rpm so it moves fluidly between OBD updates; the leading box fills partially.
+ * At/over the limit the whole bar flashes red.
+ */
 @Composable
 fun ShiftLight(modifier: Modifier, rpm: Double?, redline: Double) {
     val blink = blinkAlpha()
+    val rpmAnim by animateFloatAsState((rpm ?: 0.0).toFloat(), tween(150, easing = LinearEasing), label = "shiftRpm")
+    val redAnim by animateFloatAsState(redline.toFloat(), tween(800), label = "shiftRedline")
     Canvas(modifier) {
-        val n = 12
-        val gap = size.height * 0.8f
+        val n = 15
+        val gap = size.height * 0.6f
         val w = (size.width - gap * (n - 1)) / n
-        val from = redline - 1500.0
-        val lit = if (rpm == null) 0 else (((rpm - from) / 1500.0) * n).toInt().coerceIn(0, n)
-        val over = rpm != null && rpm >= redline
+        val start = 1000f
+        val span = (redAnim - start).coerceAtLeast(500f)
+        val pos = if (rpm == null) 0f else ((rpmAnim - start) / span * n).coerceIn(0f, n.toFloat())
+        val over = rpm != null && rpmAnim >= redAnim
+        val radius = CornerRadius(size.height / 2)
         for (i in 0 until n) {
+            val x = i * (w + gap)
+            val boxRpmFrac = (i + 1f) / n
             val col = when {
-                i < n * 0.5 -> C.Green
-                i < n * 0.8 -> C.Amber
+                boxRpmFrac <= 0.70f -> C.Green
+                boxRpmFrac <= 0.90f -> C.Amber
                 else -> C.Red
             }
-            val on = i < lit
-            val c = when {
-                over -> C.Red.copy(alpha = 0.45f + blink)
-                on -> col
-                else -> C.Faint
+            drawRoundRect(C.Faint, Offset(x, 0f), Size(w, size.height), radius)
+            if (over) {
+                drawRoundRect(C.Red.copy(alpha = (0.45f + blink).coerceIn(0f, 1f)), Offset(x, 0f), Size(w, size.height), radius)
+            } else {
+                val fill = (pos - i).coerceIn(0f, 1f)
+                if (fill > 0f) drawRoundRect(col, Offset(x, 0f), Size(w * fill, size.height), radius)
             }
-            drawRoundRect(c, Offset(i * (w + gap), 0f), Size(w, size.height), CornerRadius(size.height / 2))
         }
     }
 }
