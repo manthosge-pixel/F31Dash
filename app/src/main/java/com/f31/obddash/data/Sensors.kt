@@ -104,6 +104,8 @@ data class SensorDef(
     val derived: Boolean = false,
     val warnAbove: Double? = null,
     val warnBelow: Double? = null,
+    /** Used instead of [default] when the car refuses the default (e.g. a BMW DID → standard OBD PID). */
+    val fallback: DidSource? = null,
 )
 
 private const val DME = 0x12
@@ -112,27 +114,33 @@ private const val EGS = 0x18
 private fun obd(pid: Int, bytes: Int, factor: Double, offset: Double) =
     DidSource(DME, pid, bytes, factor, offset, obd = true)
 
+private fun dme(did: Int, bytes: Int, factor: Double, offset: Double, signed: Boolean = false) =
+    DidSource(DME, did, bytes, factor, offset, signed)
+
 /**
- * Defaults: standard OBD Mode 01 PIDs (the DME rejects the UDS F4xx form: 7F 22 31).
- * Oil pressure uses BMW DID 586F (absolute mbar, verified on an N55 MEVD17.2; -1 bar ≈ gauge).
- * Gear: EGS (18) DID DA2E byte 1 = engaged gear 1..8 (verified on an F10 ZF 8HP); 0xFF at standstill.
- * Gearbox temp: EGS DID DA12, answer 2 bytes, value in byte 1 — raw − 40 (plausible, not confirmed).
+ * Defaults: BMW DIDs of the N13 DME (from BMW's own engine description mevd1725.prg,
+ * ME V17.25 N13 — the same list the F31 Launcher uses). All of them are asked in ONE
+ * request per cycle (22 DID DID DID…), like BimmerLink, instead of one request per value.
+ * If the DME refuses one, that value switches to its standard OBD PID ([SensorDef.fallback]).
+ * Gear: EGS (18) DID DA2E byte 1 = engaged gear 1..8; 0xFF at standstill.
+ * Gearbox temp: EGS DID DA12, value in byte 1 — raw − 40.
  */
 val SENSORS: List<SensorDef> = listOf(
-    SensorDef(SensorId.RPM, "RPM", "rpm", 0.0, 7000.0, "3500", 0, true, obd(0x0C, 2, 0.25, 0.0), warnAbove = 5000.0),
+    SensorDef(SensorId.RPM, "RPM", "rpm", 0.0, 7000.0, "3500", 0, true, dme(0x4807, 2, 0.25, 0.0), warnAbove = 5000.0, fallback = obd(0x0C, 2, 0.25, 0.0)),
     SensorDef(SensorId.BOOST, "BOOST", "bar", -1.0, 2.0, "0.5", 2, true, null, derived = true, warnAbove = 1.0),
     SensorDef(SensorId.GEAR, "GEAR", "", 0.0, 8.0, "", 0, true, DidSource(EGS, 0xDA2E, 1, 1.0, 0.0, pos = 1)),
-    SensorDef(SensorId.WATER_TEMP, "WATER TEMP", "°C", 50.0, 130.0, "90", 0, false, obd(0x05, 1, 1.0, -40.0), warnAbove = 112.0),
-    SensorDef(SensorId.OIL_TEMP, "OIL TEMP", "°C", 50.0, 150.0, "100", 0, false, DidSource(DME, 0x4402, 2, 0.75, -48.0), warnAbove = 130.0),
-    SensorDef(SensorId.INTAKE_TEMP, "INTAKE AIR TEMP", "°C", -20.0, 80.0, "20", 0, false, obd(0x0F, 1, 1.0, -40.0), warnAbove = 60.0),
-    SensorDef(SensorId.MAP, "MAP / BOOST", "kPa", 0.0, 255.0, "MAP ABS", 0, true, DidSource(DME, 0x4205, 2, 0.0078125, 0.0)),
-    SensorDef(SensorId.BARO, "BARO", "kPa", 80.0, 110.0, "", 1, false, DidSource(DME, 0x4201, 2, 0.00390625, 0.0)),
-    SensorDef(SensorId.THROTTLE, "THROTTLE", "%", 0.0, 100.0, "50", 0, true, obd(0x11, 1, 100.0 / 255.0, 0.0)),
-    SensorDef(SensorId.BATTERY, "BATTERY", "V", 11.0, 16.0, "13", 1, false, obd(0x42, 2, 0.001, 0.0)),
-    SensorDef(SensorId.SPEED, "SPEED", "km/h", 0.0, 240.0, "120", 0, true, obd(0x0D, 1, 1.0, 0.0)),
+    SensorDef(SensorId.WATER_TEMP, "WATER TEMP", "°C", 50.0, 130.0, "90", 0, false, dme(0x4300, 1, 0.75, -48.0), warnAbove = 112.0, fallback = obd(0x05, 1, 1.0, -40.0)),
+    SensorDef(SensorId.OIL_TEMP, "OIL TEMP", "°C", 50.0, 150.0, "100", 0, false, dme(0x4402, 2, 0.75, -48.0), warnAbove = 130.0, fallback = obd(0x5C, 1, 1.0, -40.0)),
+    SensorDef(SensorId.INTAKE_TEMP, "INTAKE AIR TEMP", "°C", -20.0, 80.0, "20", 0, false, dme(0x580F, 1, 0.75, -48.0), warnAbove = 60.0, fallback = obd(0x0F, 1, 1.0, -40.0)),
+    SensorDef(SensorId.MAP, "MAP / BOOST", "kPa", 0.0, 255.0, "MAP ABS", 0, true, dme(0x4205, 2, 0.0078125, 0.0), fallback = obd(0x0B, 1, 1.0, 0.0)),
+    SensorDef(SensorId.BARO, "BARO", "kPa", 80.0, 110.0, "", 1, false, dme(0x4201, 2, 0.00390625, 0.0), fallback = obd(0x33, 1, 1.0, 0.0)),
+    SensorDef(SensorId.THROTTLE, "THROTTLE", "%", 0.0, 100.0, "50", 0, true, dme(0x4600, 2, 0.02441406, 0.0, signed = true), fallback = obd(0x11, 1, 100.0 / 255.0, 0.0)),
+    SensorDef(SensorId.BATTERY, "BATTERY", "V", 11.0, 16.0, "13", 1, false, dme(0x460A, 2, 0.015, 0.0), fallback = obd(0x42, 2, 0.001, 0.0)),
+    SensorDef(SensorId.SPEED, "SPEED", "km/h", 0.0, 240.0, "120", 0, true, dme(0x4AB1, 2, 0.0078125, 0.0), fallback = obd(0x0D, 1, 1.0, 0.0)),
     SensorDef(SensorId.FUEL_TRIM, "FUEL TRIM ST", "%", -25.0, 25.0, "0", 1, true, obd(0x06, 1, 100.0 / 128.0, -100.0)),
-    SensorDef(SensorId.AFR, "AIR-FUEL RATIO", ":1", 10.0, 18.0, "14", 1, true, obd(0x34, 2, 14.7 * 2.0 / 65536.0, 0.0)),
-    SensorDef(SensorId.OIL_PRESSURE, "OIL PRESSURE", "bar", 0.0, 7.0, "4", 1, true, DidSource(DME, 0x586F, 2, 0.001, -1.0)),
+    // lambda × 14.7 → AFR
+    SensorDef(SensorId.AFR, "AIR-FUEL RATIO", ":1", 10.0, 18.0, "14", 1, true, dme(0x5889, 2, 0.00024414 * 14.7, 0.0), fallback = obd(0x34, 2, 14.7 * 2.0 / 65536.0, 0.0)),
+    SensorDef(SensorId.OIL_PRESSURE, "OIL PRESSURE", "bar", 0.0, 7.0, "4", 1, true, dme(0x586F, 2, 0.001, -1.0, signed = true)),
     SensorDef(SensorId.TRANS_TEMP, "TRANSMISSION TEMP", "°C", 40.0, 140.0, "90", 0, false, DidSource(EGS, 0xDA12, 1, 1.0, -40.0, pos = 1), warnAbove = 120.0),
     SensorDef(SensorId.RUN_TIME, "ENGINE RUN TIME", "h:min:s", 0.0, 0.0, "", 0, false, obd(0x1F, 2, 1.0, 0.0)),
     SensorDef(SensorId.MAF, "AIR MASS (MAF)", "g/s", 0.0, 150.0, "75", 1, true, obd(0x10, 2, 0.01, 0.0)),

@@ -287,6 +287,10 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     @Volatile private var multiObdOk = true
+    /** Plain multi-DID read (22 DID DID…) of the DME works — the launcher's / BimmerLink's way. */
+    @Volatile private var multiDidOk = true
+    @Volatile private var multiDidFails = 0
+    @Volatile private var multiDidChunk = 16
     @Volatile private var dynOk = true
     @Volatile private var dynFails = 0
     private var dynDefined: List<Pair<SensorId, DidSource>>? = null
@@ -352,6 +356,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         var cycles = 0
         var rateT0 = System.currentTimeMillis()
         multiObdOk = true
+        multiDidOk = true
+        multiDidFails = 0
+        multiDidChunk = 16
         dynOk = true
         dynFails = 0
         dynDefined = null
@@ -378,7 +385,15 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             fun bad(id: SensorId, raw: String) {
                 val n = (fails[id] ?: 0) + 1
                 fails[id] = n
-                if (n >= 3) _unsupported.update { it + id }
+                if (n >= 3) {
+                    // the car refuses the default BMW DID → use the standard OBD PID instead
+                    val def = SENSOR_MAP[id]
+                    val fb = def?.fallback
+                    if (fb != null && cfg[id] == def.default) {
+                        _sources.update { it + (id to fb) }
+                        fails[id] = 0
+                    } else _unsupported.update { it + id }
+                }
                 vals.remove(id); raws[id] = raw
             }
             fun lost(id: SensorId) {     // no answer this time: keep the last value, don't blame the sensor
@@ -399,7 +414,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 !d.derived && d.id !in unsup && cfg[d.id] != null && when {
                     d.id == SensorId.GEAR -> if (gearPause > 0) { gearPause--; false } else true
                     d.id == SensorId.TRANS_TEMP -> if (transPause > 0) { transPause--; false } else cycle % 80 == 5
-                    d.id == SensorId.OIL_PRESSURE -> cycle % 2 == 1
+                    d.id == SensorId.MAF || d.id == SensorId.FUEL_TRIM -> cycle % 3 == 0
+                    d.id == SensorId.OIL_PRESSURE -> true
                     d.fast -> true
                     else -> cycle % 6 == 2
                 }
@@ -442,7 +458,48 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 val src = cfg[d.id]
                 if (!d.derived && d.id !in unsup && src != null && !src.obd && src.ecu == HsfzClient.ECU_DME) d.id to src else null
             }
-            if (dynOk && didAll.size > 1) {
+            var dmeDone = false
+            if (multiDidOk && didAll.size > 1) {
+                // ---- 2a. ONE request with every DME DID: 22 DID1 DID2 … → 62 DID1 data DID2 data …
+                var refused = false
+                for (chunk in didAll.chunked(multiDidChunk)) {
+                    val req = ByteArray(1 + 2 * chunk.size)
+                    req[0] = 0x22
+                    chunk.forEachIndexed { i, (_, src) -> req[1 + 2 * i] = (src.did shr 8).toByte(); req[2 + 2 * i] = src.did.toByte() }
+                    val resp = ask(HsfzClient.ECU_DME, req)
+                    if (resp == null) { chunk.forEach { (id, _) -> lost(id) }; continue }
+                    if ((resp[0].toInt() and 0xFF) != 0x62) {
+                        val nrc = if (resp.size >= 3) resp[2].toInt() and 0xFF else 0
+                        // too many at once (13) / answer too long (14): ask fewer per request
+                        if ((nrc == 0x13 || nrc == 0x14) && multiDidChunk > 2) multiDidChunk /= 2
+                        else if (++multiDidFails >= 3) multiDidOk = false
+                        dynInfo = "multi-DID → " + resp.toHex()
+                        refused = true
+                        break
+                    }
+                    multiDidFails = 0
+                    val got = HashSet<SensorId>()
+                    var p = 1
+                    while (p + 2 <= resp.size) {
+                        val d = ((resp[p].toInt() and 0xFF) shl 8) or (resp[p + 1].toInt() and 0xFF)
+                        val item = chunk.firstOrNull { (id, src) -> src.did == d && id !in got } ?: break
+                        val src = item.second
+                        val len = src.pos + src.bytes
+                        if (p + 2 + len > resp.size) break
+                        val v = src.decodeData(resp, p + 2)
+                        if (v != null) good(item.first, v, "multi " + resp.toHex()) else bad(item.first, resp.toHex())
+                        got += item.first
+                        p += 2 + len
+                    }
+                    // a DID the DME left out of a positive answer is not supported there
+                    val complete = p == resp.size
+                    for ((id, _) in chunk) if (id !in got) { if (complete) bad(id, "not in " + resp.toHex()) else lost(id) }
+                }
+                dmeDone = !refused
+            }
+            if (dmeDone) {
+                // done with one multi-DID read
+            } else if (dynOk && didAll.size > 1) {
                 if (dynDefined != didAll) {
                     dynDefined = if (defineDynamic(c, didAll.map { it.second })) didAll else null
                     if (dynDefined == null) { dynFails++; if (dynFails >= 3) dynOk = false }
@@ -701,6 +758,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         }
         sb.appendLine("OBD target: %02X · screen Wi-Fi IP: %s".format(obdTarget, wifiIp ?: "-"))
         sb.appendLine("Updates/s: %.1f · avg request: %.0f ms · multi-PID: %s".format(_pollRate.value, client?.avgLatencyMs ?: 0.0, multiObdOk))
+        sb.appendLine("Multi-DID 22 (N13 bundle): ok=%s · %d per request".format(multiDidOk, multiDidChunk))
         sb.appendLine("Dynamic DID F3xx: ok=%s defined=%s · %s".format(dynOk, dynDefined != null, dynInfo))
         sb.appendLine("Wi-Fi low-latency lock: %s · connections: %d · foreign answers: %d".format(
             wifiLock?.isHeld == true, reconnects, client?.foreignAnswers ?: 0))

@@ -15,9 +15,9 @@ android {
         // On GitHub Actions every build gets its own number (0.29.<run>), so the
         // in-app updater always sees the new build as newer. Change baseVersion by hand
         // for bigger steps.
-        val baseVersion = "0.29"
+        val baseVersion = "0.30"
         val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
-        versionCode = if (run != null) 1000 + run else 29
+        versionCode = if (run != null) 1000 + run else 30
         versionName = if (run != null) "$baseVersion.$run" else baseVersion
     }
 
