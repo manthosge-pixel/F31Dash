@@ -57,6 +57,8 @@ import com.f31.obddash.data.SENSOR_MAP
 import com.f31.obddash.data.SensorId
 import com.f31.obddash.data.formatValue
 import com.f31.obddash.enet.HsfzClient
+import com.f31.obddash.update.Updater
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -295,7 +297,7 @@ fun SettingsScreen(vm: DashViewModel) {
             }
         }
         Panel(Modifier.weight(1f).fillMaxHeight()) {
-            Column(Modifier.fillMaxSize().padding(u(12)), verticalArrangement = Arrangement.spacedBy(u(10))) {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(u(12)), verticalArrangement = Arrangement.spacedBy(u(10))) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("DEMO MODE", color = C.Text, fontSize = t(12))
@@ -311,7 +313,43 @@ fun SettingsScreen(vm: DashViewModel) {
                         "4. The app finds the car automatically (UDP 6811 → TCP 6801).",
                     color = C.Text, fontSize = t(10)
                 )
+                UpdateSection()
             }
+        }
+    }
+}
+
+@Composable
+private fun UpdateSection() {
+    val ctx = LocalContext.current
+    val st by Updater.state.collectAsState()
+    val cur = remember { Updater.currentVersion(ctx) }
+    Text("UPDATES", color = C.Dim, fontSize = t(10))
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(u(8))) {
+        val s = st
+        val (label, enabled) = when (s) {
+            is Updater.State.Available -> "INSTALL v${s.latest}" to true
+            is Updater.State.Checking -> "CHECKING…" to false
+            is Updater.State.Downloading -> "DOWNLOADING ${s.percent}%" to false
+            is Updater.State.Installing -> "INSTALLING…" to false
+            else -> "CHECK FOR UPDATE" to true
+        }
+        Button(
+            enabled = enabled,
+            onClick = {
+                if (s is Updater.State.Available) Updater.download(ctx, s.url) else Updater.check(ctx)
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = if (s is Updater.State.Available) C.Green else C.Blue)
+        ) { Text(label) }
+        Column {
+            Text("Installed v$cur", color = C.Text, fontSize = t(10))
+            val info = when (s) {
+                is Updater.State.UpToDate -> "Up to date"
+                is Updater.State.Available -> "New: v${s.latest}"
+                is Updater.State.Error -> s.msg
+                else -> "Needs internet (4G on the head unit)"
+            }
+            Text(info, color = if (s is Updater.State.Error) C.Red else C.Dim, fontSize = t(9), maxLines = 2)
         }
     }
 }

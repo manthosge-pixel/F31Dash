@@ -27,19 +27,24 @@ jobs:
           ./gradlew assembleDebug --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk F31Dash.apk
+        run: |
+          base=$(grep -oP 'val baseVersion = "\K[^"]+' app/build.gradle.kts)
+          echo "VER=$base.${{ github.run_number }}" >> $GITHUB_ENV
+          cp app/build/outputs/apk/debug/app-debug.apk F31Dash.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: F31Dash-apk
           path: F31Dash.apk
 
-      - name: Publish as "latest" release (easy download on the phone)
+      # One release per build (v0.29.N). The app's UPDATES button reads releases/latest.
+      # The file name stays F31Dash.apk, so .../releases/latest/download/F31Dash.apk always works.
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: F31 Dash (latest build)
-          body: "Automatic build of commit ${{ github.sha }}"
+          tag_name: v${{ env.VER }}
+          name: F31 Dash ${{ env.VER }}
+          body: ${{ github.event.head_commit.message }}
           files: F31Dash.apk
           make_latest: true
           prerelease: false

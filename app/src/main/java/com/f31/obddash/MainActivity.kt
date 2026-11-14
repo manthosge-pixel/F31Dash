@@ -70,6 +70,9 @@ import com.f31.obddash.ui.TripsScreen
 import com.f31.obddash.ui.ZeroHundredScreen
 import com.f31.obddash.ui.t
 import com.f31.obddash.ui.u
+import com.f31.obddash.update.Updater
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -94,17 +97,35 @@ class MainActivity : ComponentActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+        Updater.init(this)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = C.Blue, background = C.Bg, surface = C.Panel)) {
                 F31DashApp()
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        // back from "Allow install unknown apps"
+        if (packageManager.canRequestPackageInstalls()) Updater.installPending(this)
+    }
 }
 
 @Composable
 fun F31DashApp(vm: DashViewModel = viewModel()) {
     LaunchedEffect(Unit) { vm.start() }
+    // quiet update check 30 s after start (like the launcher)
+    val ctx = LocalContext.current
+    LaunchedEffect(Unit) {
+        delay(30_000)
+        Updater.check(ctx, quiet = true)
+    }
+    val upd by Updater.state.collectAsStateWithLifecycle()
+    LaunchedEffect(upd) {
+        val u = upd
+        if (u is Updater.State.Available) Toast.makeText(ctx, "F31 Dash v${u.latest} available · SETTINGS → Install", Toast.LENGTH_LONG).show()
+    }
 
     val values by vm.values.collectAsStateWithLifecycle()
     val unsupported by vm.unsupported.collectAsStateWithLifecycle()
